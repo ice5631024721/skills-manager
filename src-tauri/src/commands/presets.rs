@@ -329,6 +329,38 @@ async fn apply_preset_to_default_impl(
     result.and_then(scenario_service::refusals_to_error)
 }
 
+/// 库维度开关：one IPC call applies a preset enable/disable to a whole group
+/// of skills. `set_preset_skills_internal` already loops under a single repo
+/// lock with one metadata write, so the group case costs one round trip.
+#[derive(Debug, Serialize)]
+pub struct BatchPresetToggleResult {
+    pub updated: usize,
+    /// Present for symmetry with the sync batch command; the preset toggle is
+    /// all-or-nothing under one lock, so this stays empty today.
+    pub failed: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn batch_set_skills_preset(
+    app: tauri::AppHandle,
+    skill_ids: Vec<String>,
+    preset_id: String,
+    enabled: bool,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<BatchPresetToggleResult, AppError> {
+    let store = store.inner().clone();
+    let count = skill_ids.len();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        set_preset_skills_internal(&store, &preset_id, &skill_ids, enabled)?;
+        Ok(BatchPresetToggleResult { updated: count, failed: Vec::new() })
+    })
+    .await?;
+    if result.is_ok() {
+        refresh_tray_menu_best_effort(&app);
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn add_skill_to_preset(
     app: tauri::AppHandle,

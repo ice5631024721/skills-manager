@@ -72,3 +72,12 @@ export function agentIconNeedsDarkInvert(agentKey: string): boolean {
 export function hasAgentIcon(agentKey: string): boolean {
   return Boolean(AGENT_ICON_FILES[agentKey]);
 }
+
+export function shortLabel(displayName: string, key: string): string {
+  const words = displayName.trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+  const word = words[0] || key;
+  return word.slice(0, 2).toUpperCase();
+}

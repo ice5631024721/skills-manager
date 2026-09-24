@@ -1030,6 +1030,13 @@ pub fn run() {
             commands::skills::delete_tag,
             commands::skills::cancel_install,
             commands::skills::batch_import_folder,
+            commands::presets::batch_set_skills_preset,
+            commands::sync::batch_set_skill_targets,
+            // Sources (management-view grouping)
+            commands::sources::get_skill_sources,
+            commands::sources::refresh_skill_source_description,
+            commands::sources::set_skill_source_user_description,
+            commands::sources::refresh_skill_source,
             // Sync
             commands::sync::sync_skill_to_tool,
             commands::sync::unsync_skill_from_tool,

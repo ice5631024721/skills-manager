@@ -462,6 +462,56 @@
       "apply": "同步 {{count}} 项",
       "noAgents": "没有已安装并启用的 Agent。",
       "allSynced": "选中的 Skill 都已同步到这个 Agent"
+    },
+    "grouping": {
+      "flat": "平铺",
+      "source": "按来源"
+    },
+    "groups": {
+      "ungrouped": "未分组",
+      "uncollected": "未加入集合"
+    },
+    "upstreamDeleted": "上游已删除",
+    "upstreamDeletedHint": "该技能已在上游仓库中被删除，更新将被搁置。",
+    "sourceGroup": {
+      "refreshAll": "整仓更新",
+      "editDescription": "编辑描述",
+      "refreshDescription": "刷新描述（从 GitHub）",
+      "remove": "移除整仓",
+      "removeTitle": "移除 {{name}}",
+      "removeConfirm": "将从技能库中删除该仓库下的全部 {{count}} 个技能，此操作不可撤销。",
+      "removeAction": "全部移除",
+      "refreshed": "已更新 {{count}} 个技能",
+      "upToDate": "{{count}} 个已是最新",
+      "upstreamDeleted": "以下 {{count}} 个技能上游已删除：{{names}}",
+      "refreshFailed": "更新失败：{{names}}",
+      "newSkills": "仓库中发现 {{count}} 个新技能",
+      "newSkillsHint": "可到 安装 → Git 安装 添加",
+      "newSkillsAction": "去安装",
+      "descriptionTitle": "编辑来源描述",
+      "descriptionPlaceholder": "留空则使用自动获取的描述",
+      "descriptionHint": "自定义描述不会被刷新覆盖；留空保存即恢复自动描述。",
+      "descriptionSaved": "描述已保存",
+      "descriptionRefreshed": "已从 GitHub 刷新描述",
+      "descriptionUnavailable": "GitHub 上未找到描述"
+    },
+    "group": {
+      "toggleTitle": "对当前 Preset 整组启用 / 停用",
+      "enabledToast": "已启用 {{count}} 个技能",
+      "disabledToast": "已停用 {{count}} 个技能",
+      "toggleFailed": "{{count}} 个技能操作失败",
+      "syncAll": "已同步全部 {{total}} 个技能",
+      "syncPartial": "已同步 {{synced}}/{{total}} 个技能",
+      "syncNone": "未同步（共 {{total}} 个技能）",
+      "targetInstalled": "已为 {{agent}} 安装 {{count}} 个技能",
+      "targetUninstalled": "已从 {{agent}} 卸载 {{count}} 个技能",
+      "targetFailed": "{{count}} 个技能操作失败（{{agent}}）",
+      "checkedToast": "已检查 {{count}} 个技能的更新",
+      "checkUpdates": "检查更新",
+      "editTags": "编辑标签",
+      "syncToAgents": "同步到 Agent",
+      "updatesAvailable": "{{count}} 个可更新",
+      "upstreamDeletedCount": "{{count}} 个上游已删除"
     }
   },
   "install": {
@@ -524,6 +574,12 @@
       "batchErrors": "{{count}} 个 Skill 导入失败"
     },
     "selectLocal": "选择本地文件...",
+    "duplicate": {
+      "title": "技能已安装",
+      "message": "以下技能已从该仓库安装过：{{names}}。要把现有安装更新到最新版本吗？",
+      "update": "更新到最新",
+      "updatedToast": "已更新现有技能到最新版本"
+    },
     "gitTitle": "从 Git 仓库安装",
     "gitDesc": "输入公共或私有 Git 仓库地址。私有仓库请确保本地已配置对应的 SSH 密钥。",
     "repoUrl": "仓库地址",

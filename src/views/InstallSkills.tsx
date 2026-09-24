@@ -28,12 +28,13 @@ import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
 import * as api from "../lib/tauri";
-import type { ScanResult, SkillsShSkill, BatchImportResult, GitPreviewResult } from "../lib/tauri";
+import type { ScanResult, SkillsShSkill, BatchImportResult, GitPreviewResult, GitDuplicateSkill } from "../lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { StatusBanner } from "../components/StatusBanner";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { getErrorMessage, getErrorKind } from "../lib/error";
 
 const MARKET_PAGE_SIZE = 24;
@@ -66,6 +67,9 @@ export function InstallSkills() {
   const [gitPreviewRepoUrl, setGitPreviewRepoUrl] = useState<string | null>(null);
   const [gitSelections, setGitSelections] = useState<{ rel_path: string; name: string; description: string | null; selected: boolean }[]>([]);
   const [gitConfirmLoading, setGitConfirmLoading] = useState(false);
+  // ADR-0003: re-installing a skill the same repo already provides is
+  // refused; this state drives the "update the existing copy" prompt.
+  const [gitDuplicates, setGitDuplicates] = useState<GitDuplicateSkill[] | null>(null);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -526,21 +530,43 @@ export function InstallSkills() {
     if (selected.length === 0) return;
     setGitConfirmLoading(true);
     try {
-      await api.confirmGitInstall(
+      const outcome = await api.confirmGitInstall(
         repoUrl,
         gitPreview.temp_dir,
         selected.map((s) => ({ rel_path: s.rel_path, name: s.name }))
       );
       await Promise.all([refreshPresets(), refreshManagedSkills()]);
-      toast.success(t("install.toast.success", { name: selected.map((s) => s.name).join(", ") }));
-      setGitUrl("");
-      setGitPreview(null);
-      setGitPreviewRepoUrl(null);
-      setGitSelections([]);
+      if (outcome.installed.length > 0) {
+        toast.success(t("install.toast.success", { name: outcome.installed.map((s) => s.name).join(", ") }));
+      }
+      if (outcome.duplicates.length > 0) {
+        setGitDuplicates(outcome.duplicates);
+      }
+      if (outcome.installed.length > 0 || outcome.duplicates.length > 0) {
+        setGitUrl("");
+        setGitPreview(null);
+        setGitPreviewRepoUrl(null);
+        setGitSelections([]);
+      }
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, t("common.error")));
     } finally {
       setGitConfirmLoading(false);
+    }
+  };
+
+  // Offered when a git install was refused as a duplicate: update the
+  // existing copies in place instead of creating a second library entry.
+  const handleGitDuplicateUpdate = async () => {
+    if (!gitDuplicates) return;
+    try {
+      await api.batchUpdateSkills(gitDuplicates.map((d) => d.existing_skill_id));
+      await refreshManagedSkills();
+      toast.success(t("install.duplicate.updatedToast"));
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+    } finally {
+      setGitDuplicates(null);
     }
   };
 
@@ -1624,6 +1650,18 @@ export function InstallSkills() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!gitDuplicates}
+        title={t("install.duplicate.title")}
+        message={t("install.duplicate.message", {
+          names: gitDuplicates?.map((d) => d.existing_name).join(", ") ?? "",
+        })}
+        confirmLabel={t("install.duplicate.update")}
+        tone="warning"
+        onClose={() => setGitDuplicates(null)}
+        onConfirm={handleGitDuplicateUpdate}
+      />
     </div>
   );
 }

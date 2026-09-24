@@ -419,6 +419,56 @@
       "apply": "同步 {{count}} 項",
       "noAgents": "沒有已安裝並啟用的 Agent。",
       "allSynced": "選取的 Skill 都已同步到這個 Agent"
+    },
+    "grouping": {
+      "flat": "平鋪",
+      "source": "按來源"
+    },
+    "groups": {
+      "ungrouped": "未分組",
+      "uncollected": "未加入集合"
+    },
+    "upstreamDeleted": "上游已刪除",
+    "upstreamDeletedHint": "該 skill 已在上游倉庫中被刪除，更新將被擱置。",
+    "sourceGroup": {
+      "refreshAll": "整倉更新",
+      "editDescription": "編輯描述",
+      "refreshDescription": "重新整理描述（從 GitHub）",
+      "remove": "移除整倉",
+      "removeTitle": "移除 {{name}}",
+      "removeConfirm": "將從技能庫中刪除該倉庫下的全部 {{count}} 個 skill，此操作無法復原。",
+      "removeAction": "全部移除",
+      "refreshed": "已更新 {{count}} 個 skill",
+      "upToDate": "{{count}} 個已是最新",
+      "upstreamDeleted": "以下 {{count}} 個 skill 上游已刪除：{{names}}",
+      "refreshFailed": "更新失敗：{{names}}",
+      "newSkills": "倉庫中發現 {{count}} 個新 skill",
+      "newSkillsHint": "可到 安裝 → Git 安裝 新增",
+      "newSkillsAction": "去安裝",
+      "descriptionTitle": "編輯來源描述",
+      "descriptionPlaceholder": "留空則使用自動取得的描述",
+      "descriptionHint": "自訂描述不會被重新整理覆蓋；留空儲存即恢復自動描述。",
+      "descriptionSaved": "描述已儲存",
+      "descriptionRefreshed": "已從 GitHub 重新整理描述",
+      "descriptionUnavailable": "GitHub 上找不到描述"
+    },
+    "group": {
+      "toggleTitle": "對目前 Preset 整組啟用 / 停用",
+      "enabledToast": "已啟用 {{count}} 個技能",
+      "disabledToast": "已停用 {{count}} 個技能",
+      "toggleFailed": "{{count}} 個技能操作失敗",
+      "syncAll": "已同步全部 {{total}} 個技能",
+      "syncPartial": "已同步 {{synced}}/{{total}} 個技能",
+      "syncNone": "未同步（共 {{total}} 個技能）",
+      "targetInstalled": "已為 {{agent}} 安裝 {{count}} 個技能",
+      "targetUninstalled": "已從 {{agent}} 解除安裝 {{count}} 個技能",
+      "targetFailed": "{{count}} 個技能操作失敗（{{agent}}）",
+      "checkedToast": "已檢查 {{count}} 個技能的更新",
+      "checkUpdates": "檢查更新",
+      "editTags": "編輯標籤",
+      "syncToAgents": "同步到 Agent",
+      "updatesAvailable": "{{count}} 個可更新",
+      "upstreamDeletedCount": "{{count}} 個上游已刪除"
     }
   },
   "install": {
@@ -481,6 +531,12 @@
       "batchErrors": "{{count}} 個 Skill 匯入失敗"
     },
     "selectLocal": "選擇本機檔案...",
+    "duplicate": {
+      "title": "技能已安裝",
+      "message": "以下技能已從該倉庫安裝過：{{names}}。要將現有安裝更新到最新版本嗎？",
+      "update": "更新到最新",
+      "updatedToast": "已更新現有技能到最新版本"
+    },
     "gitTitle": "從 Git 倉庫安裝",
     "gitDesc": "輸入公開或私有 Git 倉庫位址。私有倉庫請確保本機已設定對應的 SSH 金鑰。",
     "repoUrl": "倉庫位址",

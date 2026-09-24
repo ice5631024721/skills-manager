@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 8;
+const LATEST_VERSION: u32 = 9;
 
 /// Run all pending migrations on the database.
 ///
@@ -55,6 +55,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         5 => migrate_v5_to_v6(conn),
         6 => migrate_v6_to_v7(conn),
         7 => migrate_v7_to_v8(conn),
+        8 => migrate_v8_to_v9(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -323,6 +324,115 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
 
 // ── Helpers ──
 
+/// v8 → v9: Parent structure for the management view (CONTEXT.md / ADR-0001..0003).
+///
+/// - `skill_sources`: one row per repository (the **Repo Key** is canonical),
+///   the auto-derived parent group of the source view.
+/// - `collections` + `collection_skills`: user-maintained manual groups
+///   (many-to-many, orthogonal to sources — ADR-0002).
+/// - `skills.source_id` links a skill to its source; `skills.upstream_deleted`
+///   marks skills whose upstream repo path vanished during a source refresh.
+///
+/// Backfill groups existing git/market installs by their normalized
+/// `source_ref`; descriptions are deliberately NOT fetched here (no network
+/// in migrations) and fill in on the next install or manual refresh.
+fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS skill_sources (
+            id TEXT PRIMARY KEY,
+            repo_key TEXT NOT NULL UNIQUE,
+            display_url TEXT NOT NULL,
+            branch TEXT,
+            description TEXT,
+            description_source TEXT NOT NULL DEFAULT 'none',
+            created_at INTEGER,
+            updated_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS collections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER,
+            updated_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_skills (
+            collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+            skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            added_at INTEGER,
+            PRIMARY KEY(collection_id, skill_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_skills_skill ON collection_skills(skill_id);
+        ",
+    )?;
+
+    add_column_if_missing(
+        conn,
+        "skills",
+        "source_id",
+        "TEXT REFERENCES skill_sources(id) ON DELETE SET NULL",
+    )?;
+    add_column_if_missing(conn, "skills", "upstream_deleted", "INTEGER NOT NULL DEFAULT 0")?;
+
+    backfill_skill_sources(conn)
+}
+
+/// Link existing git/market installs to `skill_sources` rows keyed by their
+/// canonical repo key. Idempotent: re-running relinks the same rows.
+fn backfill_skill_sources(conn: &Connection) -> Result<()> {
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, source_type, source_ref, source_ref_resolved FROM skills
+             WHERE source_type IN ('git','skillssh')
+               AND source_ref IS NOT NULL AND source_ref != ''",
+        )?;
+        let mapped = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        mapped.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let mut ensure = conn.prepare(
+        "INSERT OR IGNORE INTO skill_sources
+             (id, repo_key, display_url, branch, description, description_source, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, NULL, 'none', ?4, ?4)",
+    )?;
+    let mut link = conn.prepare(
+        "UPDATE skills
+         SET source_id = (SELECT id FROM skill_sources WHERE repo_key = ?1)
+         WHERE id = ?2",
+    )?;
+
+    for (skill_id, source_type, source_ref, source_ref_resolved) in rows {
+        let Some(source_ref) = source_ref else { continue };
+        let repo_key = match source_type.as_str() {
+            "skillssh" => super::repo_key::skillssh_repo_key(&source_ref),
+            _ => super::repo_key::canonical_repo_key(&source_ref),
+        };
+        let Some(repo_key) = repo_key else { continue };
+        let display = source_ref_resolved.unwrap_or(source_ref);
+        ensure.execute(rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            repo_key,
+            display,
+            now
+        ])?;
+        link.execute(rusqlite::params![repo_key, skill_id])?;
+    }
+    Ok(())
+}
+
+// ── Helpers ──
+
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -526,6 +636,54 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, LATEST_VERSION);
+    }
+
+    #[test]
+    fn v9_backfill_groups_existing_installs_by_repo_key() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn).unwrap(); // fresh database at the latest version
+
+        // Two installs of the same repo spelled differently, plus one local
+        // skill that must stay ungrouped.
+        let inserts: [(&str, &str, &str, Option<&str>, Option<&str>); 4] = [
+            ("s1", "git", "https://github.com/o/r.git", Some("https://github.com/o/r.git"), Some("skills/a")),
+            ("s2", "git", "git@github.com:O/R", Some("git@github.com:O/R"), Some("skills/b")),
+            ("s3", "skillssh", "o/r", Some("https://github.com/o/r.git"), None),
+            ("s4", "local", "/tmp/some-dir", None, None),
+        ];
+        for (id, st, sref, resolved, subpath) in inserts {
+            conn.execute(
+                "INSERT INTO skills (id, name, source_type, source_ref, source_ref_resolved,
+                                     source_subpath, central_path, created_at, updated_at)
+                 VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?1, 0, 0)",
+                rusqlite::params![id, st, sref, resolved, subpath],
+            )
+            .unwrap();
+        }
+
+        // Re-run only the v8→v9 step the way an upgrading database does.
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM skill_sources", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "all three git/market spellings collapse into one source");
+
+        let grouped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skills WHERE source_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(grouped, 3, "git and skillssh installs are linked; local stays NULL");
+
+        let repo_key: String = conn
+            .query_row("SELECT repo_key FROM skill_sources LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(repo_key, "github.com/o/r");
     }
 
     #[test]

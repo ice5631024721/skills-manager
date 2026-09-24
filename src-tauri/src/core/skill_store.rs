@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -107,6 +107,30 @@ pub struct ScenarioSkillToolToggleRecord {
     pub tool: String,
     pub enabled: bool,
     pub updated_at: i64,
+}
+
+/// One auto-derived source group (CONTEXT.md: **Skill Source**). `repo_key`
+/// is the canonical key of ADR-0003; `display_url` is the first-seen URL.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillSourceRecord {
+    pub id: String,
+    pub repo_key: String,
+    pub display_url: String,
+    pub branch: Option<String>,
+    pub description: Option<String>,
+    /// `none` | `github` | `user` — user-edited descriptions win over refreshes.
+    pub description_source: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Per-skill grouping projection used by the DTO layer, so `SkillRecord`
+/// itself stays a mirror of the legacy columns.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillSourceLink {
+    pub skill_id: String,
+    pub source_id: Option<String>,
+    pub upstream_deleted: bool,
 }
 
 impl SkillStore {
@@ -1380,6 +1404,178 @@ impl SkillStore {
         };
         Ok(rows)
     }
+
+    // ── Skill sources (来源分组) ──
+    //
+    // The grouping layer is deliberately additive: `SkillRecord` stays a
+    // mirror of the legacy `skills` columns, and source-grouping state is
+    // read and written through these dedicated queries (ADR-0001: grouping
+    // lives in the DB, not on disk).
+
+    /// Get-or-create the source row for a canonical repo key. Returns its id.
+    pub fn ensure_skill_source(&self, repo_key: &str, display_url: &str) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(id) = conn
+            .query_row(
+                "SELECT id FROM skill_sources WHERE repo_key = ?1",
+                params![repo_key],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(id);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO skill_sources
+                 (id, repo_key, display_url, branch, description, description_source, created_at, updated_at)
+             VALUES (?1, ?2, ?3, NULL, NULL, 'none', ?4, ?4)",
+            params![id, repo_key, display_url, now],
+        )?;
+        Ok(id)
+    }
+
+    fn map_source_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillSourceRecord> {
+        Ok(SkillSourceRecord {
+            id: row.get(0)?,
+            repo_key: row.get(1)?,
+            display_url: row.get(2)?,
+            branch: row.get(3)?,
+            description: row.get(4)?,
+            description_source: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    }
+
+    pub fn get_all_skill_sources(&self) -> Result<Vec<SkillSourceRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, repo_key, display_url, branch, description, description_source,
+                    created_at, updated_at
+             FROM skill_sources ORDER BY display_url",
+        )?;
+        let rows = stmt.query_map([], Self::map_source_row)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn get_skill_source(&self, id: &str) -> Result<Option<SkillSourceRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, repo_key, display_url, branch, description, description_source,
+                    created_at, updated_at
+             FROM skill_sources WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], Self::map_source_row)?;
+        Ok(rows.next().and_then(|r| r.ok()))
+    }
+
+    pub fn get_skill_source_by_repo_key(&self, repo_key: &str) -> Result<Option<SkillSourceRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, repo_key, display_url, branch, description, description_source,
+                    created_at, updated_at
+             FROM skill_sources WHERE repo_key = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![repo_key], Self::map_source_row)?;
+        Ok(rows.next().and_then(|r| r.ok()))
+    }
+
+    /// Store a description. `description_source` is `github` or `user`;
+    /// user-written text is never overwritten by a refresh.
+    pub fn update_skill_source_description(
+        &self,
+        id: &str,
+        description: Option<&str>,
+        description_source: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "UPDATE skill_sources
+             SET description = ?1, description_source = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![description, description_source, now, id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete source rows that no longer have any skill attached — groups are
+    /// auto-derived from installs, so an empty group stops existing.
+    pub fn prune_empty_skill_sources(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM skill_sources
+             WHERE id NOT IN (SELECT DISTINCT source_id FROM skills WHERE source_id IS NOT NULL)",
+            [],
+        )?;
+        Ok(n)
+    }
+
+    /// Bulk grouping projection for the DTO layer.
+    pub fn get_skill_source_links(&self) -> Result<Vec<SkillSourceLink>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, source_id, upstream_deleted FROM skills")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SkillSourceLink {
+                skill_id: row.get(0)?,
+                source_id: row.get(1)?,
+                upstream_deleted: row.get::<_, i32>(2)? != 0,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn set_skill_source(&self, skill_id: &str, source_id: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE skills SET source_id = ?1 WHERE id = ?2",
+            params![source_id, skill_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_skill_upstream_deleted(&self, skill_id: &str, deleted: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE skills SET upstream_deleted = ?1 WHERE id = ?2",
+            params![deleted as i32, skill_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_skill_ids_for_source(&self, source_id: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM skills WHERE source_id = ?1 ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![source_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// ADR-0003 dedup probe: is a skill already installed from `repo_key` at
+    /// exactly this repository-relative path? `IS ?2` matches NULL too, so a
+    /// root-level skill dedups against a prior root-level install.
+    pub fn find_skill_by_repo_and_subpath(
+        &self,
+        repo_key: &str,
+        subpath: Option<&str>,
+    ) -> Result<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT s.id, s.name
+             FROM skills s
+             JOIN skill_sources src ON s.source_id = src.id
+             WHERE src.repo_key = ?1 AND s.source_subpath IS ?2
+             LIMIT 1",
+            params![repo_key, subpath],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
 }
 
 #[cfg(test)]
@@ -1421,6 +1617,129 @@ mod audit_log_tests {
         assert_eq!(entries.len(), 2);
         // Newest first — latest detail is "4".
         assert_eq!(entries[0].detail.as_deref(), Some("4"));
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn store() -> (tempfile::TempDir, SkillStore) {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        (tmp, store)
+    }
+
+    fn skill(id: &str) -> SkillRecord {
+        SkillRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            source_type: "import".to_string(),
+            source_ref: None,
+            source_ref_resolved: None,
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: format!("/tmp/{id}"),
+            content_hash: None,
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+            status: "ok".to_string(),
+            update_status: "local_only".to_string(),
+            last_checked_at: None,
+            last_check_error: None,
+        }
+    }
+
+    fn git_skill(id: &str, subpath: Option<&str>) -> SkillRecord {
+        SkillRecord {
+            source_type: "git".to_string(),
+            source_ref: Some("https://github.com/o/r".to_string()),
+            source_subpath: subpath.map(|s| s.to_string()),
+            ..skill(id)
+        }
+    }
+
+    #[test]
+    fn ensure_skill_source_is_get_or_create() {
+        let (_tmp, store) = store();
+        let a = store.ensure_skill_source("github.com/o/r", "https://github.com/o/r").unwrap();
+        let b = store.ensure_skill_source("github.com/o/r", "https://github.com/o/r.git").unwrap();
+        assert_eq!(a, b, "same canonical key must return the same row");
+        assert_eq!(store.get_all_skill_sources().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dedup_probe_matches_exact_repo_and_subpath() {
+        let (_tmp, store) = store();
+        store.insert_skill(&git_skill("s1", Some("skills/a"))).unwrap();
+        let source_id = store.ensure_skill_source("github.com/o/r", "u").unwrap();
+        store.set_skill_source("s1", Some(&source_id)).unwrap();
+
+        let hit = store
+            .find_skill_by_repo_and_subpath("github.com/o/r", Some("skills/a"))
+            .unwrap()
+            .expect("same repo+path must be found");
+        assert_eq!(hit.0, "s1");
+
+        assert!(
+            store
+                .find_skill_by_repo_and_subpath("github.com/o/r", Some("skills/b"))
+                .unwrap()
+                .is_none(),
+            "different subpath is a different skill"
+        );
+        assert!(
+            store
+                .find_skill_by_repo_and_subpath("github.com/other/r", Some("skills/a"))
+                .unwrap()
+                .is_none(),
+            "different repo is not a duplicate"
+        );
+    }
+
+    #[test]
+    fn dedup_probe_treats_null_subpath_as_its_own_slot() {
+        let (_tmp, store) = store();
+        store.insert_skill(&git_skill("root", None)).unwrap();
+        let source_id = store.ensure_skill_source("github.com/o/r", "u").unwrap();
+        store.set_skill_source("root", Some(&source_id)).unwrap();
+
+        let hit = store
+            .find_skill_by_repo_and_subpath("github.com/o/r", None)
+            .unwrap()
+            .expect("root-level skill dedups against NULL subpath");
+        assert_eq!(hit.0, "root");
+    }
+
+    #[test]
+    fn prune_removes_only_orphan_sources() {
+        let (_tmp, store) = store();
+        store.insert_skill(&git_skill("s1", None)).unwrap();
+        let live = store.ensure_skill_source("github.com/o/r", "u").unwrap();
+        let orphan = store.ensure_skill_source("github.com/x/y", "u").unwrap();
+        store.set_skill_source("s1", Some(&live)).unwrap();
+
+        let pruned = store.prune_empty_skill_sources().unwrap();
+        assert_eq!(pruned, 1);
+        assert!(store.get_skill_source(&live).unwrap().is_some());
+        assert!(store.get_skill_source(&orphan).unwrap().is_none());
+    }
+
+    #[test]
+    fn source_description_roundtrip() {
+        let (_tmp, store) = store();
+        let id = store.ensure_skill_source("github.com/o/r", "u").unwrap();
+        store
+            .update_skill_source_description(&id, Some("great skills"), "github")
+            .unwrap();
+        let src = store.get_skill_source(&id).unwrap().unwrap();
+        assert_eq!(src.description.as_deref(), Some("great skills"));
+        assert_eq!(src.description_source, "github");
     }
 }
 

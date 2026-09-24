@@ -45,6 +45,105 @@ fn sync_skill_to_tool_internal(
     )
 }
 
+/// Per-skill enable plus the active-scenario tool-default bookkeeping that
+/// `sync_skill_to_tool` layers on top. Shared by the single and batch paths.
+fn enable_skill_target(store: &SkillStore, skill_id: &str, tool: &str) -> Result<(), AppError> {
+    sync_skill_to_tool_internal(store, skill_id, tool)?;
+
+    if let Ok(Some(active_id)) = store.get_active_scenario_id() {
+        let skill_ids = store
+            .get_skill_ids_for_scenario(&active_id)
+            .map_err(AppError::db)?;
+        if skill_ids.contains(&skill_id.to_string()) {
+            let adapter_keys: Vec<String> = tool_adapters::enabled_installed_adapters(store)
+                .iter()
+                .map(|a| a.key.clone())
+                .collect();
+            store
+                .ensure_scenario_skill_tool_defaults(&active_id, skill_id, &adapter_keys)
+                .map_err(AppError::db)?;
+            store
+                .set_scenario_skill_tool_enabled(&active_id, skill_id, tool, true)
+                .map_err(AppError::db)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Per-skill disable: removes the recorded target with the #363 survivor
+/// protection (never delete content the user replaced) plus the active-
+/// scenario tool-default bookkeeping. Shared by single and batch paths.
+fn disable_skill_target(store: &SkillStore, skill_id: &str, tool: &str) -> Result<(), AppError> {
+    let targets = store
+        .get_targets_for_skill(skill_id)
+        .map_err(AppError::db)?;
+
+    // Toggling a skill off is the GUI twin of `skills undeploy`, so it
+    // needs the same protection: the row says we deployed here, but if
+    // the user has since replaced our artifact with content of their
+    // own, that content is not ours to delete (#363).
+    if let Some(target) = targets.iter().find(|t| t.tool == tool) {
+        let target_path = PathBuf::from(&target.target_path);
+        // Several tools can resolve to one skills directory, so this
+        // exact path may still be deployed for another (skill, tool)
+        // that is staying. `apply_remove` has this survivor check;
+        // without it here, switching agent A off deletes agent B's
+        // live deployment.
+        let still_referenced = store
+            .get_all_targets()
+            .map_err(AppError::db)?
+            .into_iter()
+            .any(|other| {
+                other.target_path == target.target_path
+                    && !(other.skill_id == skill_id && other.tool == tool)
+            });
+        if still_referenced {
+            log::debug!(
+                "unsync: keeping {} (still referenced by another target)",
+                target_path.display()
+            );
+        } else {
+            match sync_engine::remove_recorded_target(&target_path, &target.mode) {
+                Ok(true) => {}
+                Ok(false) => log::warn!(
+                    "unsync: preserving {} — no longer matches its recorded {} deployment; \
+                     removing the record only",
+                    target_path.display(),
+                    target.mode
+                ),
+                Err(e) => {
+                    log::warn!("unsync: failed to remove {}: {e}", target_path.display())
+                }
+            }
+        }
+    }
+
+    store
+        .delete_target(skill_id, tool)
+        .map_err(AppError::db)?;
+
+    if let Ok(Some(active_id)) = store.get_active_scenario_id() {
+        let skill_ids = store
+            .get_skill_ids_for_scenario(&active_id)
+            .map_err(AppError::db)?;
+        if skill_ids.contains(&skill_id.to_string()) {
+            let adapter_keys: Vec<String> = tool_adapters::enabled_installed_adapters(store)
+                .iter()
+                .map(|a| a.key.clone())
+                .collect();
+            store
+                .ensure_scenario_skill_tool_defaults(&active_id, skill_id, &adapter_keys)
+                .map_err(AppError::db)?;
+            store
+                .set_scenario_skill_tool_enabled(&active_id, skill_id, tool, false)
+                .map_err(AppError::db)?;
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn sync_skill_to_tool(
     app: AppHandle,
@@ -55,28 +154,7 @@ pub async fn sync_skill_to_tool(
     let store = store.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let outcome = (|| -> Result<(), AppError> {
-            sync_skill_to_tool_internal(&store, &skill_id, &tool)?;
-
-            if let Ok(Some(active_id)) = store.get_active_scenario_id() {
-                let skill_ids = store
-                    .get_skill_ids_for_scenario(&active_id)
-                    .map_err(AppError::db)?;
-                if skill_ids.contains(&skill_id) {
-                    let adapter_keys: Vec<String> =
-                        tool_adapters::enabled_installed_adapters(&store)
-                            .iter()
-                            .map(|a| a.key.clone())
-                            .collect();
-                    store
-                        .ensure_scenario_skill_tool_defaults(&active_id, &skill_id, &adapter_keys)
-                        .map_err(AppError::db)?;
-                    store
-                        .set_scenario_skill_tool_enabled(&active_id, &skill_id, &tool, true)
-                        .map_err(AppError::db)?;
-                }
-            }
-
-            Ok(())
+            enable_skill_target(&store, &skill_id, &tool)
         })();
         log_sync_outcome(&store, "enable", &skill_id, &tool, outcome.as_ref());
         outcome
@@ -98,74 +176,7 @@ pub async fn unsync_skill_from_tool(
     let store = store.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let outcome = (|| -> Result<(), AppError> {
-            let targets = store
-                .get_targets_for_skill(&skill_id)
-                .map_err(AppError::db)?;
-
-            // Toggling a skill off is the GUI twin of `skills undeploy`, so it
-            // needs the same protection: the row says we deployed here, but if
-            // the user has since replaced our artifact with content of their
-            // own, that content is not ours to delete (#363).
-            if let Some(target) = targets.iter().find(|t| t.tool == tool) {
-                let target_path = PathBuf::from(&target.target_path);
-                // Several tools can resolve to one skills directory, so this
-                // exact path may still be deployed for another (skill, tool)
-                // that is staying. `apply_remove` has this survivor check;
-                // without it here, switching agent A off deletes agent B's
-                // live deployment.
-                let still_referenced = store
-                    .get_all_targets()
-                    .map_err(AppError::db)?
-                    .into_iter()
-                    .any(|other| {
-                        other.target_path == target.target_path
-                            && !(other.skill_id == skill_id && other.tool == tool)
-                    });
-                if still_referenced {
-                    log::debug!(
-                        "unsync: keeping {} (still referenced by another target)",
-                        target_path.display()
-                    );
-                } else {
-                    match sync_engine::remove_recorded_target(&target_path, &target.mode) {
-                        Ok(true) => {}
-                        Ok(false) => log::warn!(
-                            "unsync: preserving {} — no longer matches its recorded {} deployment; \
-                             removing the record only",
-                            target_path.display(),
-                            target.mode
-                        ),
-                        Err(e) => {
-                            log::warn!("unsync: failed to remove {}: {e}", target_path.display())
-                        }
-                    }
-                }
-            }
-
-            store
-                .delete_target(&skill_id, &tool)
-                .map_err(AppError::db)?;
-
-            if let Ok(Some(active_id)) = store.get_active_scenario_id() {
-                let skill_ids = store
-                    .get_skill_ids_for_scenario(&active_id)
-                    .map_err(AppError::db)?;
-                if skill_ids.contains(&skill_id) {
-                    let adapter_keys: Vec<String> =
-                        tool_adapters::enabled_installed_adapters(&store)
-                            .iter()
-                            .map(|a| a.key.clone())
-                            .collect();
-                    store
-                        .ensure_scenario_skill_tool_defaults(&active_id, &skill_id, &adapter_keys)
-                        .map_err(AppError::db)?;
-                    store
-                        .set_scenario_skill_tool_enabled(&active_id, &skill_id, &tool, false)
-                        .map_err(AppError::db)?;
-                }
-            }
-
-            Ok(())
+            disable_skill_target(&store, &skill_id, &tool)
         })();
         log_sync_outcome(&store, "disable", &skill_id, &tool, outcome.as_ref());
         outcome
@@ -562,4 +573,58 @@ mod tests {
             "second"
         );
     }
+}
+
+/// One skill that failed inside a batch target operation, with its reason.
+#[derive(Debug, Serialize)]
+pub struct BatchTargetFailure {
+    pub skill_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchTargetSyncResult {
+    pub updated: usize,
+    pub failed: Vec<BatchTargetFailure>,
+}
+
+/// 库维度同步：one IPC call installs/uninstalls a whole group of skills for
+/// one agent. Runs every `(skill, agent)` write server-side so the frontend
+/// makes a single round trip and refreshes once — no per-skill cascades, and
+/// per-skill failures are reported instead of silently half-applied.
+#[tauri::command]
+pub async fn batch_set_skill_targets(
+    skill_ids: Vec<String>,
+    tool: String,
+    enabled: bool,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<BatchTargetSyncResult, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut updated = 0usize;
+        let mut failed = Vec::new();
+        for skill_id in &skill_ids {
+            let outcome = if enabled {
+                enable_skill_target(&store, skill_id, &tool)
+            } else {
+                disable_skill_target(&store, skill_id, &tool)
+            };
+            let action = if enabled { "enable" } else { "disable" };
+            match outcome {
+                Ok(()) => {
+                    log_sync_outcome(&store, action, skill_id, &tool, Ok(()).as_ref());
+                    updated += 1;
+                }
+                Err(e) => {
+                    log_sync_outcome(&store, action, skill_id, &tool, Err(&e));
+                    failed.push(BatchTargetFailure {
+                        skill_id: skill_id.clone(),
+                        message: e.message,
+                    });
+                }
+            }
+        }
+        Ok(BatchTargetSyncResult { updated, failed })
+    })
+    .await?
 }

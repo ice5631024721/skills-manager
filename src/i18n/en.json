@@ -462,6 +462,56 @@
       "apply": "Sync {{count}}",
       "noAgents": "No installed and enabled agents.",
       "allSynced": "Every selected skill is already on this agent"
+    },
+    "grouping": {
+      "flat": "Flat",
+      "source": "By Source"
+    },
+    "groups": {
+      "ungrouped": "Ungrouped",
+      "uncollected": "Not in a Collection"
+    },
+    "upstreamDeleted": "Upstream deleted",
+    "upstreamDeletedHint": "This skill was deleted upstream; its updates are held back.",
+    "sourceGroup": {
+      "refreshAll": "Update whole repo",
+      "editDescription": "Edit description",
+      "refreshDescription": "Refresh description from GitHub",
+      "remove": "Remove whole repo",
+      "removeTitle": "Remove {{name}}",
+      "removeConfirm": "This deletes all {{count}} skills from this repo in your library. This cannot be undone.",
+      "removeAction": "Remove all",
+      "refreshed": "Updated {{count}} skills",
+      "upToDate": "{{count}} already up to date",
+      "upstreamDeleted": "{{count}} skills were deleted upstream: {{names}}",
+      "refreshFailed": "Update failed: {{names}}",
+      "newSkills": "Found {{count}} new skills in this repo",
+      "newSkillsHint": "Add them under Install → Git install.",
+      "newSkillsAction": "Install",
+      "descriptionTitle": "Edit source description",
+      "descriptionPlaceholder": "Leave empty to use the automatic description",
+      "descriptionHint": "A custom description is never overwritten by refreshes; saving empty resets to the automatic one.",
+      "descriptionSaved": "Description saved",
+      "descriptionRefreshed": "Description refreshed from GitHub",
+      "descriptionUnavailable": "No description found on GitHub"
+    },
+    "group": {
+      "toggleTitle": "Enable or disable the whole group for the current preset",
+      "enabledToast": "Enabled {{count}} skills",
+      "disabledToast": "Disabled {{count}} skills",
+      "toggleFailed": "{{count}} skills failed",
+      "syncAll": "{{total}} skills synced",
+      "syncPartial": "{{synced}}/{{total}} skills synced",
+      "syncNone": "No skills synced ({{total}})",
+      "targetInstalled": "Installed {{count}} skills to {{agent}}",
+      "targetUninstalled": "Uninstalled {{count}} skills from {{agent}}",
+      "targetFailed": "{{count}} skills failed ({{agent}})",
+      "checkedToast": "Checked {{count}} skills for updates",
+      "checkUpdates": "Check for updates",
+      "editTags": "Edit tags",
+      "syncToAgents": "Sync to agents",
+      "updatesAvailable": "{{count}} updates available",
+      "upstreamDeletedCount": "{{count}} deleted upstream"
     }
   },
   "install": {
@@ -524,6 +574,12 @@
       "batchErrors": "{{count}} skill(s) failed to import"
     },
     "selectLocal": "Select local file...",
+    "duplicate": {
+      "title": "Already installed",
+      "message": "These skills are already installed from this repository: {{names}}. Update the existing copies to the latest version?",
+      "update": "Update to latest",
+      "updatedToast": "Existing skills updated to latest"
+    },
     "gitTitle": "Install from Git Repository",
     "gitDesc": "Enter a public or private Git repository URL. For private repos, ensure SSH keys are configured.",
     "repoUrl": "Repository URL",

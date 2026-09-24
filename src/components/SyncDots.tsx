@@ -3,16 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { ManagedSkill, ToolInfo } from "../lib/tauri";
 import { cn } from "../utils";
 import { AgentIcon } from "./AgentIcon";
-import { hasAgentIcon } from "../lib/agentIcons";
-
-function shortLabel(displayName: string, key: string): string {
-  const words = displayName.trim().split(/\s+/).filter(Boolean);
-  if (words.length >= 2) {
-    return (words[0][0] + words[1][0]).toUpperCase();
-  }
-  const word = words[0] || key;
-  return word.slice(0, 2).toUpperCase();
-}
+import { hasAgentIcon, shortLabel } from "../lib/agentIcons";
 
 type DotState = "synced" | "available" | "orphan";
 

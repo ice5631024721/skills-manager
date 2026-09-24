@@ -68,7 +68,7 @@ pub struct PendingRemoval {
 /// deployed copy.
 pub const LIBRARY_LOCATION: &str = "library";
 
-enum UpdateOutcome {
+pub(crate) enum UpdateOutcome {
     Applied {
         content_changed: bool,
     },
@@ -215,6 +215,10 @@ pub struct ManagedSkillDto {
     pub targets: Vec<TargetDto>,
     pub preset_ids: Vec<String>,
     pub tags: Vec<String>,
+    /// Skill Source group this skill belongs to (ADR-0004), if any.
+    pub source_id: Option<String>,
+    /// Set by a source refresh when the skill's upstream path vanished.
+    pub upstream_deleted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -310,6 +314,34 @@ pub struct SkillInstallItem {
     pub name: String,
 }
 
+/// One requested install that was refused because the same repo already
+/// provides a skill at that exact path (ADR-0003). The UI offers "update the
+/// existing copy" instead of creating a duplicate.
+#[derive(Debug, serde::Serialize)]
+pub struct GitDuplicateSkill {
+    pub rel_path: String,
+    /// Upstream name of the requested skill.
+    pub name: String,
+    pub existing_skill_id: String,
+    pub existing_name: String,
+}
+
+/// A skill that was newly installed by a git install request.
+#[derive(Debug, serde::Serialize)]
+pub struct GitInstalledSkill {
+    pub id: String,
+    pub name: String,
+}
+
+/// Outcome of a git install request. `installed` carries the new skills;
+/// `duplicates` carries refusals with enough information to offer an update
+/// of the existing copy.
+#[derive(Debug, serde::Serialize, Default)]
+pub struct GitInstallOutcome {
+    pub installed: Vec<GitInstalledSkill>,
+    pub duplicates: Vec<GitDuplicateSkill>,
+}
+
 struct CancelRegistrationGuard {
     registry: Arc<InstallCancelRegistry>,
     key: String,
@@ -339,10 +371,11 @@ pub async fn get_managed_skills(
         let skills = store.get_all_skills().map_err(AppError::db)?;
         let all_targets = store.get_all_targets().map_err(AppError::db)?;
         let tags_map = store.get_tags_map().map_err(AppError::db)?;
+        let grouping = GroupingMaps::load(&store);
         let count = skills.len();
         let dtos: Vec<ManagedSkillDto> = skills
             .into_iter()
-            .map(|skill| managed_skill_to_dto(&store, skill, &all_targets, &tags_map))
+            .map(|skill| managed_skill_to_dto(&store, skill, &all_targets, &tags_map, &grouping))
             .collect();
         let elapsed_ms = start.elapsed().as_millis();
         if should_log_first_or_slow(&GET_MANAGED_SKILLS_FIRST_CALL, elapsed_ms, 100) {
@@ -365,10 +398,11 @@ pub async fn get_skills_for_preset(
             .map_err(AppError::db)?;
         let all_targets = store.get_all_targets().map_err(AppError::db)?;
         let tags_map = store.get_tags_map().map_err(AppError::db)?;
+        let grouping = GroupingMaps::load(&store);
 
         Ok(skills
             .into_iter()
-            .map(|skill| managed_skill_to_dto(&store, skill, &all_targets, &tags_map))
+            .map(|skill| managed_skill_to_dto(&store, skill, &all_targets, &tags_map, &grouping))
             .collect())
     })
     .await?
@@ -779,6 +813,12 @@ pub fn delete_managed_skills_by_ids(
             deleted += 1;
         }
 
+        // Source groups are auto-derived from installs (ADR-0002), so when the
+        // last member of a group goes, the group goes with it.
+        if deleted > 0 {
+            store.prune_empty_skill_sources()?;
+        }
+
         if deleted > 0 {
             sync_metadata::write_all_from_db_unlocked(store)?;
         }
@@ -793,14 +833,37 @@ pub fn delete_managed_skills_by_ids(
 fn log_install_outcome(
     store: &SkillStore,
     source_label: &str,
-    outcome: Result<&(String, String), &AppError>,
+    outcome: Result<Option<InstallAuditInfo<'_>>, &AppError>,
 ) {
     let draft = AuditDraft::new("install").detail(source_label);
     let draft = match outcome {
-        Ok((id, name)) => draft.skill(id.clone(), name.clone()).ok(),
+        Ok(Some(info)) => draft.skill(info.id.to_string(), info.name.to_string()).ok(),
+        Ok(None) => draft.ok(),
         Err(e) => draft.fail(e.to_string()),
     };
     store.log_audit(draft);
+}
+
+/// What the audit trail records for one install attempt. A duplicate refusal
+/// audits as the *existing* skill — nothing new was installed.
+pub(crate) struct InstallAuditInfo<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+}
+
+pub(crate) fn git_install_audit_info(
+    outcome: &'_ GitInstallOutcome,
+) -> Option<InstallAuditInfo<'_>> {
+    if let Some(installed) = outcome.installed.first() {
+        return Some(InstallAuditInfo {
+            id: &installed.id,
+            name: &installed.name,
+        });
+    }
+    outcome.duplicates.first().map(|d| InstallAuditInfo {
+        id: &d.existing_skill_id,
+        name: &d.existing_name,
+    })
 }
 
 fn log_update_outcome(
@@ -909,7 +972,13 @@ pub async fn install_local(
             let skill_id = store_installed_skill_unlocked(&store, &result, &metadata, None)?;
             Ok((skill_id, skill_name))
         })();
-        log_install_outcome(&store, "local", outcome.as_ref());
+        log_install_outcome(
+            &store,
+            "local",
+            outcome
+                .as_ref()
+                .map(|(id, name)| Some(InstallAuditInfo { id, name })),
+        );
         outcome.map(|_| ())
     })
     .await?
@@ -922,7 +991,7 @@ pub async fn install_git(
     store: State<'_, Arc<SkillStore>>,
     cancel_registry: State<'_, Arc<InstallCancelRegistry>>,
     app_handle: tauri::AppHandle,
-) -> Result<(), AppError> {
+) -> Result<GitInstallOutcome, AppError> {
     let store = store.inner().clone();
     let proxy_url = store.proxy_url();
     let registry = cancel_registry.inner().clone();
@@ -944,7 +1013,7 @@ pub async fn install_git(
                 .ok();
         };
 
-        let outcome = (|| -> Result<(String, String), AppError> {
+        let outcome = (|| -> Result<GitInstallOutcome, AppError> {
             git_fetcher::validate_git_url(&repo_url).map_err(AppError::git)?;
             emit_progress("cloning");
             let parsed = git_fetcher::parse_git_source_resolved(&repo_url, proxy_url.as_deref());
@@ -973,11 +1042,34 @@ pub async fn install_git(
             .map_err(AppError::classify_git_error)?;
 
             emit_progress("installing");
-            let install_result = (|| -> Result<(String, String), AppError> {
+            let install_result = (|| -> Result<GitInstallOutcome, AppError> {
                 let _lock =
                     RepoLock::acquire_foreground("install git skill").map_err(AppError::db)?;
                 let skill_dir = resolve_skill_dir(&temp_dir, parsed.subpath.as_deref(), None)?;
                 let revision = git_fetcher::get_head_revision(&temp_dir).map_err(AppError::git)?;
+
+                // ADR-0003 dedup: refuse to second-install the same skill.
+                let subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
+                if let Some(key) = crate::core::repo_key::canonical_repo_key(&repo_url) {
+                    if let Some((existing_skill_id, existing_name)) = store
+                        .find_skill_by_repo_and_subpath(&key, subpath.as_deref())
+                        .map_err(AppError::db)?
+                    {
+                        return Ok(GitInstallOutcome {
+                            installed: Vec::new(),
+                            duplicates: vec![GitDuplicateSkill {
+                                rel_path: subpath.unwrap_or_default(),
+                                name: name.clone().unwrap_or_else(|| skill_dir
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default()),
+                                existing_skill_id,
+                                existing_name,
+                            }],
+                        });
+                    }
+                }
+
                 let result = installer::install_from_git_dir(&skill_dir, name.as_deref())
                     .map_err(AppError::io)?;
                 let metadata = InstallSourceMetadata {
@@ -992,18 +1084,26 @@ pub async fn install_git(
                 };
                 let skill_name = result.name.clone();
                 let skill_id = store_installed_skill_unlocked(&store, &result, &metadata, None)?;
-                Ok((skill_id, skill_name))
+                Ok(GitInstallOutcome {
+                    installed: vec![GitInstalledSkill {
+                        id: skill_id,
+                        name: skill_name,
+                    }],
+                    duplicates: Vec::new(),
+                })
             })();
 
             git_fetcher::cleanup_temp(&temp_dir);
             install_result
         })();
 
-        log_install_outcome(&store, "git", outcome.as_ref());
-        outcome?;
+        log_install_outcome(&store, "git", outcome.as_ref().map(git_install_audit_info));
+        if !outcome.as_ref().map(|o| o.installed.is_empty()).unwrap_or(true) {
+            spawn_description_fetch(&store, Some(&repo_url), "git");
+        }
 
         emit_progress("done");
-        Ok(())
+        outcome
     })
     .await?
 }
@@ -1098,7 +1198,20 @@ pub async fn install_from_skillssh(
             install_result
         })();
 
-        log_install_outcome(&store, "skillssh", outcome.as_ref());
+        log_install_outcome(
+            &store,
+            "skillssh",
+            outcome
+                .as_ref()
+                .map(|(id, name)| Some(InstallAuditInfo { id, name })),
+        );
+        if outcome.is_ok() {
+            spawn_description_fetch(
+                &store,
+                Some(&format!("{source}/{skill_id}")),
+                "skillssh",
+            );
+        }
         outcome?;
 
         emit_progress("done");
@@ -1199,21 +1312,25 @@ pub async fn preview_git_install(
 }
 
 /// Install selected skills from a previously cloned temp directory.
+///
+/// Skills already installed from the same repo at the same path (ADR-0003)
+/// are refused and reported in `duplicates` — the UI offers to update them.
 #[tauri::command]
 pub async fn confirm_git_install(
     repo_url: String,
     temp_dir: String,
     items: Vec<SkillInstallItem>,
     store: State<'_, Arc<SkillStore>>,
-) -> Result<(), AppError> {
+) -> Result<GitInstallOutcome, AppError> {
     let store = store.inner().clone();
     let proxy_url = store.proxy_url();
     tauri::async_runtime::spawn_blocking(move || {
         let temp_path = validate_clone_temp_path(&temp_dir)?;
 
-        let result: Result<(), AppError> = (|| {
+        let result: Result<GitInstallOutcome, AppError> = (|| {
+            let mut outcome = GitInstallOutcome::default();
             if items.is_empty() {
-                return Ok(());
+                return Ok(outcome);
             }
 
             let parsed = git_fetcher::parse_git_source_resolved(&repo_url, proxy_url.as_deref());
@@ -1222,6 +1339,7 @@ pub async fn confirm_git_install(
             let revision = git_fetcher::get_head_revision(&temp_path).map_err(AppError::git)?;
             let _lock =
                 RepoLock::acquire_foreground("confirm git install").map_err(AppError::db)?;
+            let repo_key = crate::core::repo_key::canonical_repo_key(&repo_url);
 
             for dir in &all_dirs {
                 let rel_key = skill_rel_key(&skill_dir, dir);
@@ -1235,9 +1353,25 @@ pub async fn confirm_git_install(
                 } else {
                     Some(custom_name)
                 };
+                // ADR-0003 dedup: same repo + same repo-relative path is the
+                // same skill — refuse and let the UI offer an update.
+                let subpath = git_fetcher::relative_subpath(&temp_path, dir);
+                if let Some(key) = &repo_key {
+                    if let Some((existing_skill_id, existing_name)) = store
+                        .find_skill_by_repo_and_subpath(key, subpath.as_deref())
+                        .map_err(AppError::db)?
+                    {
+                        outcome.duplicates.push(GitDuplicateSkill {
+                            rel_path: rel_key,
+                            name: item.name.clone(),
+                            existing_skill_id,
+                            existing_name,
+                        });
+                        continue;
+                    }
+                }
                 let result =
                     installer::install_from_git_dir(dir, install_name).map_err(AppError::io)?;
-                let subpath = git_fetcher::relative_subpath(&temp_path, dir);
                 let metadata = InstallSourceMetadata {
                     source_type: "git".to_string(),
                     source_ref: Some(repo_url.clone()),
@@ -1248,9 +1382,15 @@ pub async fn confirm_git_install(
                     remote_revision: Some(revision.clone()),
                     update_status: "up_to_date".to_string(),
                 };
-                store_installed_skill_unlocked(&store, &result, &metadata, None)?;
+                let installed_id =
+                    store_installed_skill_unlocked(&store, &result, &metadata, None)?;
+                outcome.installed.push(GitInstalledSkill {
+                    id: installed_id,
+                    name: result.name,
+                });
             }
-            Ok(())
+            spawn_description_fetch(&store, Some(&repo_url), "git");
+            Ok(outcome)
         })();
 
         // Always clean up temp directory, regardless of success or failure.
@@ -1791,11 +1931,35 @@ pub async fn detach_local_skill_source(
     .await?
 }
 
+/// Grouping lookups shared by every DTO build. Fetched once per list so the
+/// N+1 problem stays out of the hot path.
+pub(crate) struct GroupingMaps {
+    pub links: std::collections::HashMap<String, (Option<String>, bool)>,
+}
+
+impl GroupingMaps {
+    pub fn load(store: &SkillStore) -> Self {
+        let mut links = std::collections::HashMap::new();
+        for link in store.get_skill_source_links().unwrap_or_default() {
+            links.insert(link.skill_id, (link.source_id, link.upstream_deleted));
+        }
+        Self { links }
+    }
+
+    pub fn for_skill(&self, skill_id: &str) -> (Option<String>, bool) {
+        self.links
+            .get(skill_id)
+            .cloned()
+            .unwrap_or((None, false))
+    }
+}
+
 fn managed_skill_to_dto(
     store: &SkillStore,
     skill: SkillRecord,
     all_targets: &[SkillTargetRecord],
     tags_map: &std::collections::HashMap<String, Vec<String>>,
+    grouping: &GroupingMaps,
 ) -> ManagedSkillDto {
     let targets = all_targets
         .iter()
@@ -1813,6 +1977,7 @@ fn managed_skill_to_dto(
 
     let preset_ids = store.get_scenarios_for_skill(&skill.id).unwrap_or_default();
     let tags = tags_map.get(&skill.id).cloned().unwrap_or_default();
+    let (source_id, upstream_deleted) = grouping.for_skill(&skill.id);
 
     // Prefer description from SKILL.md so the list view reflects edits made
     // directly on disk (file watcher emits a change event; this read serves
@@ -1845,6 +2010,8 @@ fn managed_skill_to_dto(
         targets,
         preset_ids,
         tags,
+        source_id,
+        upstream_deleted,
     }
 }
 
@@ -1858,7 +2025,8 @@ pub fn managed_skill_by_id(
         .ok_or_else(|| AppError::not_found("Skill not found"))?;
     let all_targets = store.get_all_targets().map_err(AppError::db)?;
     let tags_map = store.get_tags_map().map_err(AppError::db)?;
-    Ok(managed_skill_to_dto(store, skill, &all_targets, &tags_map))
+    let grouping = GroupingMaps::load(store);
+    Ok(managed_skill_to_dto(store, skill, &all_targets, &tags_map, &grouping))
 }
 
 /// Update an installed git-sourced skill.
@@ -1927,105 +2095,16 @@ pub fn update_git_skill_internal(
             git_source.subpath.as_deref(),
             git_source.locator_skill_id.as_deref(),
         )?;
-
-        let new_hash =
-            crate::core::content_hash::hash_directory(&skill_dir).map_err(AppError::io)?;
-        let content_changed = skill.content_hash.as_deref() != Some(new_hash.as_str());
-        let source_subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
-        let _lock = RepoLock::acquire_foreground("update installed skill").map_err(AppError::db)?;
-
-        // Stage first, then compare. The tree that lands in the library is the
-        // installer's output, not the raw checkout — it drops `.git` and every
-        // symlink — so comparing against the checkout would report a path as
-        // surviving that the swap then removes.
-        let staged_path = staged_path_for(&skill.central_path);
-        let install_result = if content_changed {
-            Some(
-                installer::install_skill_dir_to_destination(&skill_dir, &skill.name, &staged_path)
-                    .inspect_err(|_| {
-                        let _ = remove_path_if_exists(&staged_path);
-                    })
-                    .map_err(AppError::io)?,
-            )
-        } else {
-            None
-        };
-        let staged_guard = StagedPathGuard::new(&staged_path, install_result.is_some());
-
-        let pending = pending_removals_for(store, &skill, install_result.is_some().then_some(staged_path.as_path()))?;
-
-        // A confirmation answers one exact question: this revision, this list
-        // as shown. It closes the window while the dialog is open — a push, or
-        // a file that changes the list, re-asks. Note a directory the new
-        // version drops is one entry, so a file created *inside* it afterwards
-        // does not change the list; approving `outputs/` approves the subtree. It cannot close the window
-        // between this scan and the removal itself: the repo lock holds off
-        // Skills Manager, not the agent processes writing into these very
-        // directories. Narrowing that further needs the directories frozen
-        // before the scan, not another scan.
-        let approval = removal_approval_token(&remote_revision, &pending);
-        if !pending.is_empty() && approved_removals != Some(approval.as_str()) {
-            // Declining is not a failure: nothing was touched and the update is
-            // still waiting. Clear the `updating` marker here, inside the lock,
-            // rather than after releasing it — doing it later lets a concurrent
-            // update overwrite the state, and swallowing the error would leave
-            // the skill showing "updating" forever.
-            store
-                .update_skill_check_state(
-                    &skill.id,
-                    Some(&remote_revision),
-                    "update_available",
-                    None,
-                )
-                .map_err(AppError::db)?;
-            return Ok(UpdateOutcome::Held { pending, approval });
-        }
-
-        if let Some(install_result) = install_result {
-            swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
-            // Only now is it the library's. Releasing before the swap left the
-            // staged directory behind whenever its first rename failed.
-            staged_guard.release();
-
-            store
-                .update_skill_source_metadata(
-                    &skill.id,
-                    Some(&git_source.clone_url),
-                    source_subpath.as_deref(),
-                    git_source.branch.as_deref(),
-                    Some(&remote_revision),
-                )
-                .map_err(AppError::db)?;
-            store
-                .update_skill_after_install(
-                    &skill.id,
-                    &skill.name,
-                    install_result.description.as_deref(),
-                    Some(&remote_revision),
-                    Some(&remote_revision),
-                    Some(&install_result.content_hash),
-                    "up_to_date",
-                )
-                .map_err(AppError::db)?;
-            resync_copy_targets(store, &skill.id)?;
-            sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
-        } else {
-            store
-                .update_skill_source_metadata(
-                    &skill.id,
-                    Some(&git_source.clone_url),
-                    source_subpath.as_deref(),
-                    git_source.branch.as_deref(),
-                    Some(&remote_revision),
-                )
-                .map_err(AppError::db)?;
-            store
-                .update_skill_check_state(&skill.id, Some(&remote_revision), "up_to_date", None)
-                .map_err(AppError::db)?;
-            resync_copy_targets(store, &skill.id)?;
-            sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
-        }
-        Ok(UpdateOutcome::Applied { content_changed })
+        apply_update_from_checkout(
+            store,
+            &skill,
+            &temp_dir,
+            &skill_dir,
+            &git_source.clone_url,
+            git_source.branch.as_deref(),
+            &remote_revision,
+            approved_removals,
+        )
     })();
     git_fetcher::cleanup_temp(&temp_dir);
 
@@ -2053,6 +2132,125 @@ pub fn update_git_skill_internal(
             Err(e)
         }
     }
+}
+
+/// Apply an update to one installed skill from an already-open fresh checkout.
+///
+/// Shared by the per-skill update path (`update_git_skill_internal`, which
+/// clones first) and the source-refresh batch (one clone, many skills). Stages
+/// the new tree, asks about removals exactly like the single-skill path, swaps,
+/// and writes the DB state. `repo_root` is the checkout root (used to record
+/// the repo-relative subpath); `skill_dir` is where this skill's files live
+/// inside that checkout.
+pub(crate) fn apply_update_from_checkout(
+    store: &SkillStore,
+    skill: &SkillRecord,
+    repo_root: &Path,
+    skill_dir: &Path,
+    clone_url: &str,
+    branch: Option<&str>,
+    remote_revision: &str,
+    approved_removals: Option<&str>,
+) -> Result<UpdateOutcome, AppError> {
+    // Mark a successful apply: the skill clearly still exists upstream.
+    let _ = store.set_skill_upstream_deleted(&skill.id, false);
+    let new_hash = crate::core::content_hash::hash_directory(skill_dir).map_err(AppError::io)?;
+    let content_changed = skill.content_hash.as_deref() != Some(new_hash.as_str());
+    let source_subpath = git_fetcher::relative_subpath(repo_root, skill_dir);
+    let _lock = RepoLock::acquire_foreground("update installed skill").map_err(AppError::db)?;
+
+    // Stage first, then compare. The tree that lands in the library is the
+    // installer's output, not the raw checkout — it drops `.git` and every
+    // symlink — so comparing against the checkout would report a path as
+    // surviving that the swap then removes.
+    let staged_path = staged_path_for(&skill.central_path);
+    let install_result = if content_changed {
+        Some(
+            installer::install_skill_dir_to_destination(skill_dir, &skill.name, &staged_path)
+                .inspect_err(|_| {
+                    let _ = remove_path_if_exists(&staged_path);
+                })
+                .map_err(AppError::io)?,
+        )
+    } else {
+        None
+    };
+    let staged_guard = StagedPathGuard::new(&staged_path, install_result.is_some());
+
+    let pending = pending_removals_for(store, skill, install_result.is_some().then_some(staged_path.as_path()))?;
+
+    // A confirmation answers one exact question: this revision, this list
+    // as shown. It closes the window while the dialog is open — a push, or
+    // a file that changes the list, re-asks. Note a directory the new
+    // version drops is one entry, so a file created *inside* it afterwards
+    // does not change the list; approving `outputs/` approves the subtree. It cannot close the window
+    // between this scan and the removal itself: the repo lock holds off
+    // Skills Manager, not the agent processes writing into these very
+    // directories. Narrowing that further needs the directories frozen
+    // before the scan, not another scan.
+    let approval = removal_approval_token(remote_revision, &pending);
+    if !pending.is_empty() && approved_removals != Some(approval.as_str()) {
+        // Declining is not a failure: nothing was touched and the update is
+        // still waiting. Clear the `updating` marker here, inside the lock,
+        // rather than after releasing it — doing it later lets a concurrent
+        // update overwrite the state, and swallowing the error would leave
+        // the skill showing "updating" forever.
+        store
+            .update_skill_check_state(
+                &skill.id,
+                Some(remote_revision),
+                "update_available",
+                None,
+            )
+            .map_err(AppError::db)?;
+        return Ok(UpdateOutcome::Held { pending, approval });
+    }
+
+    if let Some(install_result) = install_result {
+        swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+        // Only now is it the library's. Releasing before the swap left the
+        // staged directory behind whenever its first rename failed.
+        staged_guard.release();
+
+        store
+            .update_skill_source_metadata(
+                &skill.id,
+                Some(clone_url),
+                source_subpath.as_deref(),
+                branch,
+                Some(remote_revision),
+            )
+            .map_err(AppError::db)?;
+        store
+            .update_skill_after_install(
+                &skill.id,
+                &skill.name,
+                install_result.description.as_deref(),
+                Some(remote_revision),
+                Some(remote_revision),
+                Some(&install_result.content_hash),
+                "up_to_date",
+            )
+            .map_err(AppError::db)?;
+        resync_copy_targets(store, &skill.id)?;
+        sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
+    } else {
+        store
+            .update_skill_source_metadata(
+                &skill.id,
+                Some(clone_url),
+                source_subpath.as_deref(),
+                branch,
+                Some(remote_revision),
+            )
+            .map_err(AppError::db)?;
+        store
+            .update_skill_check_state(&skill.id, Some(remote_revision), "up_to_date", None)
+            .map_err(AppError::db)?;
+        resync_copy_targets(store, &skill.id)?;
+        sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
+    }
+    Ok(UpdateOutcome::Applied { content_changed })
 }
 
 #[derive(Debug, Serialize)]
@@ -2416,6 +2614,70 @@ pub fn reimport_local_skill_internal(
     }
 }
 
+/// Link an installed skill to its Skill Source group (ADR-0002/0003).
+///
+/// No-op for local/import installs (they have no repo) and for refs that do
+/// not name a host/owner/repo triple. Non-fatal by contract: a grouping miss
+/// must never fail an install.
+fn link_skill_source(store: &SkillStore, skill_id: &str, metadata: &InstallSourceMetadata) {
+    let Some(source_ref) = metadata.source_ref.as_deref() else {
+        return;
+    };
+    let repo_key = match metadata.source_type.as_str() {
+        "skillssh" => crate::core::repo_key::skillssh_repo_key(source_ref),
+        "git" => crate::core::repo_key::canonical_repo_key(source_ref),
+        _ => None,
+    };
+    let Some(repo_key) = repo_key else {
+        return;
+    };
+    let display = metadata
+        .source_ref_resolved
+        .as_deref()
+        .unwrap_or(source_ref);
+    let linked = store
+        .ensure_skill_source(&repo_key, display)
+        .ok()
+        .and_then(|source_id| {
+            store
+                .set_skill_source(skill_id, Some(&source_id))
+                .ok()
+                .map(|_| source_id)
+        });
+    if linked.is_none() {
+        log::warn!("link_skill_source: could not attach {skill_id} to {repo_key}");
+    }
+}
+
+/// Best-effort GitHub description sync after an install (design Q4a).
+///
+/// Runs on a detached thread so the network never sits inside the repo lock
+/// and an install never waits on it. Only fetches while the source has no
+/// description at all; user edits (`description_source = "user"`) always win.
+fn spawn_description_fetch(store: &Arc<SkillStore>, source_ref: Option<&str>, source_type: &str) {
+    let Some(source_ref) = source_ref else { return };
+    let repo_key = match source_type {
+        "skillssh" => crate::core::repo_key::skillssh_repo_key(source_ref),
+        "git" => crate::core::repo_key::canonical_repo_key(source_ref),
+        _ => None,
+    };
+    let Some(repo_key) = repo_key else { return };
+    let store = store.clone();
+    std::thread::spawn(move || {
+        let Ok(Some(source)) = store.get_skill_source_by_repo_key(&repo_key) else {
+            return;
+        };
+        if source.description_source != "none" || source.description.is_some() {
+            return;
+        }
+        if let Some(desc) =
+            crate::core::source_description::fetch_github_description(&repo_key, store.proxy_url().as_deref())
+        {
+            let _ = store.update_skill_source_description(&source.id, Some(&desc), "github");
+        }
+    });
+}
+
 pub fn store_installed_skill_unlocked(
     store: &SkillStore,
     result: &installer::InstallResult,
@@ -2445,6 +2707,7 @@ pub fn store_installed_skill_unlocked(
                 &metadata.update_status,
             )
             .map_err(AppError::db)?;
+        link_skill_source(store, &existing.id, metadata);
         if let Some(scenario_id) = active_scenario_id {
             store
                 .add_skill_to_scenario(scenario_id, &existing.id)
@@ -2488,6 +2751,7 @@ pub fn store_installed_skill_unlocked(
     };
 
     store.insert_skill(&record).map_err(AppError::db)?;
+    link_skill_source(store, &id, metadata);
     if let Some(scenario_id) = active_scenario_id {
         store
             .add_skill_to_scenario(scenario_id, &id)

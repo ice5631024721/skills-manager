@@ -39,6 +39,10 @@ export interface ManagedSkill {
   targets: SkillTarget[];
   preset_ids: string[];
   tags: string[];
+  /** Skill Source group this skill belongs to (auto-derived from its repo). */
+  source_id: string | null;
+  /** Upstream repo no longer contains this skill's path (kept locally). */
+  upstream_deleted: boolean;
 }
 
 export interface SkillTarget {
@@ -266,7 +270,7 @@ export const installLocal = (sourcePath: string, name?: string) =>
   invoke<void>("install_local", { sourcePath, name: name || null });
 
 export const installGit = (repoUrl: string, name?: string) =>
-  invoke<void>("install_git", { repoUrl, name: name || null });
+  invoke<GitInstallOutcome>("install_git", { repoUrl, name: name || null });
 
 export interface GitSkillPreview {
   /** Path relative to the resolved scan root, using `/` separators. Stable key. */
@@ -288,11 +292,93 @@ export interface SkillInstallItem {
 export const previewGitInstall = (repoUrl: string) =>
   invoke<GitPreviewResult>("preview_git_install", { repoUrl });
 
+/** A skill newly installed by a git install request. */
+export interface GitInstalledSkill {
+  id: string;
+  name: string;
+}
+
+/** A refused install: the same repo already provides this exact skill path. */
+export interface GitDuplicateSkill {
+  rel_path: string;
+  name: string;
+  existing_skill_id: string;
+  existing_name: string;
+}
+
+export interface GitInstallOutcome {
+  installed: GitInstalledSkill[];
+  duplicates: GitDuplicateSkill[];
+}
+
 export const confirmGitInstall = (repoUrl: string, tempDir: string, items: SkillInstallItem[]) =>
-  invoke<void>("confirm_git_install", { repoUrl, tempDir, items });
+  invoke<GitInstallOutcome>("confirm_git_install", { repoUrl, tempDir, items });
 
 export const cancelGitPreview = (tempDir: string) =>
   invoke<void>("cancel_git_preview", { tempDir });
+
+// ── Skill Sources (management-view grouping) ──
+
+/** Auto-derived repo group (CONTEXT.md: Skill Source). */
+export interface SkillSource {
+  id: string;
+  repo_key: string;
+  display_url: string;
+  branch: string | null;
+  description: string | null;
+  /** "none" | "github" | "user" — user-written descriptions win on refresh. */
+  description_source: string;
+  skill_count: number;
+}
+
+export interface SourceRefreshNewSkill {
+  rel_path: string;
+  name: string;
+  description: string | null;
+}
+
+export interface SourceRefreshResult {
+  refreshed: string[];
+  unchanged: string[];
+  held_back: string[];
+  failed: string[];
+  upstream_deleted: string[];
+  new_skills: SourceRefreshNewSkill[];
+}
+
+export const getSkillSources = () => invoke<SkillSource[]>("get_skill_sources");
+
+export const refreshSkillSourceDescription = (sourceId: string) =>
+  invoke<SkillSource>("refresh_skill_source_description", { sourceId });
+
+export const setSkillSourceUserDescription = (sourceId: string, description: string | null) =>
+  invoke<void>("set_skill_source_user_description", { sourceId, description });
+
+export interface BatchPresetToggleResult {
+  updated: number;
+  failed: string[];
+}
+
+/** 库维度开关: one call flips a whole group's preset membership. */
+export const batchSetSkillsPreset = (skillIds: string[], presetId: string, enabled: boolean) =>
+  invoke<BatchPresetToggleResult>("batch_set_skills_preset", { skillIds, presetId, enabled });
+
+export interface BatchTargetFailure {
+  skill_id: string;
+  message: string;
+}
+
+export interface BatchTargetSyncResult {
+  updated: number;
+  failed: BatchTargetFailure[];
+}
+
+/** 库维度同步: one call installs/uninstalls a whole group for one agent. */
+export const batchSetSkillTargets = (skillIds: string[], tool: string, enabled: boolean) =>
+  invoke<BatchTargetSyncResult>("batch_set_skill_targets", { skillIds, tool, enabled });
+
+export const refreshSkillSource = (sourceId: string) =>
+  invoke<SourceRefreshResult>("refresh_skill_source", { sourceId });
 
 export const installFromSkillssh = (source: string, skillId: string) =>
   invoke<void>("install_from_skillssh", { source, skillId });
