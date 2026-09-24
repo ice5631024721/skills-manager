@@ -924,3 +924,48 @@ export const updateGlobalLocalSkillFromCenter = (agent: string, skillRelativePat
 
 export const deleteGlobalLocalSkill = (agent: string, skillRelativePath: string) =>
   invoke<void>("delete_global_local_skill", { agent, skillRelativePath });
+
+// ── MCP Inventory (read-only, ADR-0005) ──
+
+export interface McpAgentStatus {
+  agent_key: string;
+  display_name: string;
+  installed: boolean;
+  config_path: string;
+  config_exists: boolean;
+  server_count: number;
+  /** Set when the config file exists but could not be read or parsed. */
+  error: string | null;
+}
+
+/** One agent's copy of a server definition. */
+export interface McpServerOccurrence {
+  agent_key: string;
+  agent_display_name: string;
+  transport: string;
+  command: string | null;
+  url: string | null;
+  /** Env key names only — values never leave the backend. */
+  env_keys: string[];
+  /** OpenCode's native flag; `null` on agents without one (DSH = registered). */
+  enabled: boolean | null;
+  entry_id: string | null;
+  config_path: string;
+}
+
+export interface McpServerSummary {
+  name: string;
+  transport: string;
+  command: string | null;
+  url: string | null;
+  env_keys: string[];
+  agents: McpServerOccurrence[];
+}
+
+export interface McpInventoryReport {
+  servers: McpServerSummary[];
+  agents: McpAgentStatus[];
+  scanned_at_ms: number;
+}
+
+export const getMcpInventory = () => invoke<McpInventoryReport>("get_mcp_inventory");

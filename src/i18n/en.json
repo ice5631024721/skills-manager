@@ -13,7 +13,10 @@
     "newPreset": "New Preset",
     "projects": "Project Workspaces",
     "addProject": "Link Project",
-    "settings": "Settings"
+    "settings": "Settings",
+    "resourceSkills": "Skills",
+    "resourceMcp": "MCP",
+    "mcpLibrary": "MCP Inventory"
   },
   "help": {
     "eyebrow": "Guide",
@@ -1153,6 +1156,34 @@
       "deleteLocalBatchConfirm": "Permanently delete {{count}} local skills from {{agent}}? They exist only in this agent’s folder and cannot be recovered.",
       "deletedLocalBatch": "{{count}} local skills deleted",
       "deleteLocalBatchFailed": "{{count}} local skills failed to delete"
+    }
+  },
+  "mcp": {
+    "title": "MCP Inventory",
+    "subtitle": "MCP servers configured in local agents. Read-only: this version detects what exists and never edits an agent config.",
+    "rescan": "Rescan",
+    "scanning": "Scanning…",
+    "summary": "{{servers}} servers · {{agents}} agents",
+    "agentsSection": "Supported agents",
+    "serversSection": "Detected servers",
+    "loadFailed": "Scan failed: {{message}}",
+    "agent": {
+      "notInstalled": "Not detected",
+      "noConfig": "No config file",
+      "readFailed": "Read failed",
+      "serverCount": "{{servers}} servers"
+    },
+    "state": {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "registered": "Registered"
+    },
+    "envKeysOnly": "key names only",
+    "configFiles": "{{count}} config files",
+    "noEndpoint": "(no command or URL)",
+    "empty": {
+      "title": "No MCP servers found",
+      "body": "Neither OpenCode nor DeepSeek Harness has an MCP entry yet. Add one in the agent, then rescan."
     }
   }
 }

@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Folder,
   Home,
+  Plug,
   ArrowRight,
 } from "lucide-react";
 import { useApp } from "../context/AppContext";
@@ -171,6 +172,13 @@ export function CommandPalette() {
         label: t("commandPalette.scanImport"),
         icon: <FolderOpen className="h-3.5 w-3.5" />,
         run: () => navigate("/install?tab=local"),
+      },
+      {
+        id: "action:mcp-inventory",
+        kind: "action",
+        label: t("sidebar.mcpLibrary"),
+        icon: <Plug className="h-3.5 w-3.5" />,
+        run: () => navigate("/mcp"),
       },
       {
         id: "action:settings",

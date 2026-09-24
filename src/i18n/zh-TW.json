@@ -13,7 +13,10 @@
     "newPreset": "新增 Preset",
     "projects": "專案工作區",
     "addProject": "關聯專案",
-    "settings": "設定"
+    "settings": "設定",
+    "resourceSkills": "技能",
+    "resourceMcp": "MCP",
+    "mcpLibrary": "MCP 清單"
   },
   "help": {
     "eyebrow": "操作指南",
@@ -1069,6 +1072,34 @@
       "deleteLocalBatchConfirm": "永久刪除 {{agent}} 裡的 {{count}} 個本機 Skill？這些 Skill 只存在於該 Agent 目錄，刪除後無法復原。",
       "deletedLocalBatch": "已刪除 {{count}} 個本機 Skill",
       "deleteLocalBatchFailed": "{{count}} 個本機 Skill 刪除失敗"
+    }
+  },
+  "mcp": {
+    "title": "MCP 清單",
+    "subtitle": "本機各 agent 已設定的 MCP 服務。唯讀：目前版本只做識別，不會修改任何 agent 設定。",
+    "rescan": "重新掃描",
+    "scanning": "掃描中…",
+    "summary": "共 {{servers}} 個 MCP · {{agents}} 個 agent",
+    "agentsSection": "受支援的 agent",
+    "serversSection": "已發現的 MCP",
+    "loadFailed": "掃描失敗：{{message}}",
+    "agent": {
+      "notInstalled": "未偵測到",
+      "noConfig": "沒有設定檔",
+      "readFailed": "讀取失敗",
+      "serverCount": "{{servers}} 個 MCP"
+    },
+    "state": {
+      "enabled": "已啟用",
+      "disabled": "已停用",
+      "registered": "已註冊"
+    },
+    "envKeysOnly": "僅顯示鍵名",
+    "configFiles": "{{count}} 個設定檔",
+    "noEndpoint": "（無命令或 URL）",
+    "empty": {
+      "title": "未發現 MCP 設定",
+      "body": "OpenCode 與 DeepSeek Harness 的設定裡都還沒有 MCP 條目。在 agent 中加入後點「重新掃描」。"
     }
   }
 }

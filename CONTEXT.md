@@ -1,8 +1,28 @@
 # Skills Manager
 
-管理 AI agent 技能（Skills）的桌面应用：技能从各处安装进中央仓库，再同步到各个 agent 工具目录。本词汇表定义项目的领域语言。
+管理 AI agent 能力资源的桌面应用。资源按类型并列（当前：技能、MCP），各自有中央库，同步到各个 agent 工具。本词汇表定义项目的领域语言。
 
 ## Language
+
+### 资源类型
+
+**Resource Type（资源类型）**:
+并列管理域的最顶层划分（Skill、MCP，未来可扩展）。决定导航与界面分区；各类型数据模型独立（垂直切片），不共享存储 schema。
+_Avoid_: 把某类型的表结构泛化成通用 resource 表
+
+### MCP
+
+**MCP Server（MCP 服务器定义）**:
+本系统管理的最小 MCP 单元：一条服务器定义（名字 + stdio 启动命令或远程 URL + env）。指配置条目，不是运行中的进程——stdio 进程由 agent 自己拉起，manager 只做配置管理。当前版本（v1）只识别、不写入。
+_Avoid_: MCP 服务（含糊）、把定义与进程混为一谈
+
+**MCP Inventory（MCP 清单）**:
+只读扫描受支持 agent 的 MCP 配置得到的本机现状：装了什么 MCP、分别在哪些 agent 里，以及传输类型、启动命令/URL、env 键名、来源文件。按服务器名跨 agent 聚合，是 v1 唯一的 MCP 界面能力。
+_Avoid_: 把清单当成中央定义库（清单是现状快照，定义库是将来的写入真源）
+
+**Managed / Foreign Entry（托管条目 / 外来条目）**:
+方向已定、v1 未实现：由 manager 导入或新建的条目为托管条目，agent 侧以 manager 为准，可更新、可移除；用户日后直接在 agent 配置里手加的条目为外来条目，只读展示、可一键接管。
+_Avoid_: 把外来条目当作托管条目去改写
 
 ### 技能
 

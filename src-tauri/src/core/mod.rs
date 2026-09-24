@@ -15,6 +15,7 @@ pub mod github_api;
 pub mod install_cancel;
 pub mod installer;
 pub mod log_sanitize;
+pub mod mcp_inventory;
 pub mod merge;
 pub mod migrations;
 pub mod panic_log;

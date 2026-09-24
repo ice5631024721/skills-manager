@@ -10,6 +10,7 @@ import {
   Settings,
   Plus,
   Pencil,
+  Plug,
   Trash2,
   FolderOpen,
   GripVertical,
@@ -164,12 +165,19 @@ export function Sidebar() {
     }
   };
 
-  const NAV_ITEMS = [
-    { name: t("sidebar.dashboard"), path: "/", icon: LayoutDashboard },
-    { name: t("sidebar.mySkills"), path: "/my-skills", icon: Layers },
-    { name: t("sidebar.installSkills"), path: "/install", icon: Download },
-    { name: t("sidebar.backup"), path: "/backup", icon: CloudUpload },
-  ];
+  // Resource type switch (ADR-0005): skills and MCP are siblings, so the
+  // sidebar shows exactly one resource's navigation at a time. The mode is
+  // derived from the route — no extra state to keep in sync.
+  const isMcpMode = location.pathname.startsWith("/mcp");
+
+  const NAV_ITEMS = isMcpMode
+    ? [{ name: t("sidebar.mcpLibrary"), path: "/mcp", icon: Plug }]
+    : [
+        { name: t("sidebar.dashboard"), path: "/", icon: LayoutDashboard },
+        { name: t("sidebar.mySkills"), path: "/my-skills", icon: Layers },
+        { name: t("sidebar.installSkills"), path: "/install", icon: Download },
+        { name: t("sidebar.backup"), path: "/backup", icon: CloudUpload },
+      ];
 
   const handleSwitchPreset = (id: string) => {
     setViewedPresetId(id);
@@ -391,6 +399,38 @@ export function Sidebar() {
           </span>
         </div>
 
+        {/* Resource switch: skills | MCP (ADR-0005 — sibling resource types) */}
+        <div className="px-2.5 pb-1.5 shrink-0">
+          <div className="flex items-center gap-0.5 rounded-lg border border-border-subtle bg-surface-hover p-0.5">
+            <button
+              type="button"
+              onClick={() => navigate("/my-skills")}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded-[6px] px-2 py-[5px] text-[12px] font-medium transition-colors outline-none",
+                !isMcpMode
+                  ? "bg-surface-active text-primary"
+                  : "text-muted hover:text-secondary"
+              )}
+            >
+              <Layers className={cn("h-3.5 w-3.5", !isMcpMode ? "text-accent" : "text-muted")} />
+              {t("sidebar.resourceSkills")}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/mcp")}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded-[6px] px-2 py-[5px] text-[12px] font-medium transition-colors outline-none",
+                isMcpMode
+                  ? "bg-surface-active text-primary"
+                  : "text-muted hover:text-secondary"
+              )}
+            >
+              <Plug className={cn("h-3.5 w-3.5", isMcpMode ? "text-accent" : "text-muted")} />
+              {t("sidebar.resourceMcp")}
+            </button>
+          </div>
+        </div>
+
         {/* Nav */}
         <div className="px-2.5 space-y-0.5 shrink-0">
           {NAV_ITEMS.map((item) => {
@@ -414,11 +454,25 @@ export function Sidebar() {
           })}
         </div>
 
+        {/* Skill-only sections — hidden while the MCP resource is active, so the
+            two resource types never stack in one sidebar (ADR-0005). */}
+        {isMcpMode && <div className="flex-1" />}
+
         {/* Divider */}
-        <div className="mx-3 mt-3.5 mb-2.5 border-t border-border-subtle" />
+        <div
+          className={cn(
+            "mx-3 mt-3.5 mb-2.5 border-t border-border-subtle",
+            isMcpMode && "hidden"
+          )}
+        />
 
         {/* Scrollable section */}
-        <div className="px-2.5 flex-1 overflow-y-auto scrollbar-hide min-h-0">
+        <div
+          className={cn(
+            "px-2.5 flex-1 overflow-y-auto scrollbar-hide min-h-0",
+            isMcpMode && "hidden"
+          )}
+        >
 
           {/* ── Presets ── */}
           <div className="mb-1.5 px-2.5 flex items-center gap-1">

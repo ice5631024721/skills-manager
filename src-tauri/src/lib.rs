@@ -1003,6 +1003,8 @@ pub fn run() {
             commands::tools::reset_custom_tool_project_path,
             commands::tools::add_custom_tool,
             commands::tools::remove_custom_tool,
+            // MCP inventory (read-only, ADR-0005)
+            commands::mcp::get_mcp_inventory,
             // Skills
             commands::skills::get_managed_skills,
             commands::skills::get_skills_for_preset,
