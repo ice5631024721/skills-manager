@@ -240,7 +240,10 @@ export function McpInventory() {
         if (initial) setError(message);
         else toast.error(t("mcp.refreshFailed", { message }));
       } finally {
-        if (initial && loadGenRef.current === gen) setLoading(false);
+        // The newest generation owns the loading flag: an initial load that
+        // loses the race must not leave the spinner up forever, and a stale
+        // non-initial one must not hide a newer initial load's spinner.
+        if (loadGenRef.current === gen) setLoading(false);
       }
     },
     [t],
