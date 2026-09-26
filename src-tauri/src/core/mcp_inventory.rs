@@ -440,7 +440,9 @@ fn merge_command(command: Option<String>, args: &[String]) -> Option<String> {
 
 // ── Shared helpers ──
 
-fn normalize_transport(raw: Option<&str>, has_url: bool, has_command: bool) -> String {
+/// Shared transport vocabulary — also consumed by `mcp_writers` so the
+/// inventory report and a writer's `read_entry` can never disagree.
+pub(crate) fn normalize_transport(raw: Option<&str>, has_url: bool, has_command: bool) -> String {
     match raw.map(|value| value.trim().to_ascii_lowercase()) {
         Some(kind) if kind == "local" || kind == "stdio" => "stdio".to_string(),
         Some(kind) if kind == "streamable-http" => "streamable-http".to_string(),

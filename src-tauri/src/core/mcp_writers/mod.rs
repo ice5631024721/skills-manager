@@ -19,6 +19,9 @@
 //! target member cannot be located must refuse with
 //! [`AgentWriteError::Unsafe`] — never rewrite the file wholesale.
 
+pub mod json_span;
+pub mod opencode_json;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
@@ -156,9 +159,8 @@ pub trait McpWriter: Sync {
 /// caller refuses with a clear error.
 pub fn writer_for_agent(agent_key: &str) -> Option<&'static dyn McpWriter> {
     match agent_key {
-        // Task 3 flips the next arm to Some(&opencode_json::OpenCodeWriter)…
-        "opencode" => None,
-        // …and Task 4 flips this one to Some(&dsh_yaml::DshYamlWriter).
+        "opencode" => Some(&opencode_json::OpenCodeWriter),
+        // Task 4 registers the DSH YAML writer on the next arm.
         "deepseek_harness" => None,
         _ => None,
     }
@@ -249,7 +251,8 @@ mod tests {
     }
 
     #[test]
-    fn writer_registry_rejects_unknown_agents() {
+    fn writer_registry_resolves_registered_and_rejects_unknown_agents() {
+        assert!(writer_for_agent("opencode").is_some());
         // Unknown keys must stay None so callers refuse instead of guessing
         // at a format for an agent we have not audited.
         assert!(writer_for_agent("nonexistent-agent").is_none());
