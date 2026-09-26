@@ -61,9 +61,15 @@ function flagValue(args: string[], flag: string): string | null {
 }
 
 /** Package id from `…/node_modules/@scope/name/bin.mjs` (last node_modules
- *  occurrence wins, so nested installs resolve to the innermost package). */
+ *  occurrence wins, so nested installs resolve to the innermost package).
+ *  Mirrors Rust `package_from_node_modules_path` EXACTLY: the forward-slash
+ *  marker wins when present; the backslash form is only a fallback — taking
+ *  the later of the two (as an earlier draft did) diverges on mixed-separator
+ *  paths and would prefill a different package than the backend infers. */
 function packageFromNodeModulesPath(path: string): string | null {
-  const marker = Math.max(path.lastIndexOf("node_modules/"), path.lastIndexOf("node_modules\\"));
+  const slash = path.lastIndexOf("node_modules/");
+  const back = path.lastIndexOf("node_modules\\");
+  const marker = slash >= 0 ? slash : back;
   if (marker < 0) return null;
   const rest = path.slice(marker + "node_modules".length + 1);
   const segments = rest.split(/[/\\]/).filter((s) => s.length > 0);
@@ -389,6 +395,10 @@ export function McpAddDialog({ open, server, onClose, onChanged, runDriftChain, 
     } catch (err) {
       setError(null);
       toast.error(getErrorMessage(err, t("common.error")));
+      // A failed edit can still have committed the record (the backend
+      // updates the row before the per-agent write loop) — the card grid
+      // must re-pull, same report-then-refresh pattern as runDelete.
+      onChanged();
     } finally {
       setBusy(false);
     }

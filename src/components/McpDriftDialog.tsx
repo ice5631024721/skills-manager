@@ -100,7 +100,13 @@ export function McpDriftDialog({ chain }: Props) {
       // Set-merge: an EditOutcome re-reports every already-clean agent on
       // each replay, and a stale token re-queues its own agent with a fresh one.
       const nextApplied = Array.from(new Set([...applied, ...landed]));
-      const next = [...queue.slice(1), ...pendingAgents(result)];
+      // Rebuild, never concatenate: edit/delete re-report the FULL remaining
+      // pending set on every replay (they loop all bindings), so appending
+      // them to queue.slice(1) duplicated agents and inflated the step count
+      // until a replay hit an already-deleted record.
+      const byAgent = new Map<string, PendingDrift>();
+      for (const pending of pendingAgents(result)) byAgent.set(pending.agent_key, pending);
+      const next = Array.from(byAgent.values());
       const round = rounds + 1;
       setRounds(round);
       setApplied(nextApplied);
@@ -134,7 +140,9 @@ export function McpDriftDialog({ chain }: Props) {
         <div className="mb-4 flex shrink-0 items-center justify-between">
           <h2 className="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-primary">
             <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-            <span className="truncate">{t("mcp.driftTitle")}</span>
+            <span className="truncate">
+              {head.kind === "foreign" ? t("mcp.foreignOverwriteTitle") : t("mcp.driftTitle")}
+            </span>
             <span className="shrink-0 rounded-full bg-surface-hover px-2 py-0.5 text-[11px] font-medium text-muted">
               {t("mcp.driftStep", { current: Math.min(applied.length + 1, total), total })}
             </span>
@@ -150,7 +158,9 @@ export function McpDriftDialog({ chain }: Props) {
         </div>
 
         <p className="mb-4 shrink-0 text-[13px] leading-5 text-tertiary">
-          {t("mcp.driftBody", { name: chain.name, agent: agentName })}
+          {head.kind === "foreign"
+            ? t("mcp.foreignOverwriteBody", { name: chain.name, agent: agentName })
+            : t("mcp.driftBody", { name: chain.name, agent: agentName })}
         </p>
 
         {/* Scrollable body: two verbatim file panes, never a synthesized diff. */}

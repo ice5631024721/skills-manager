@@ -1064,6 +1064,9 @@ export interface PendingDrift {
   token: string;
   current_text: string;
   planned_text: string;
+  /** "drift" = our entry was hand-edited; "foreign" = an entry we never
+   *  wrote occupies the name. CONTEXT.md keeps the terms distinct. */
+  kind: "drift" | "foreign";
 }
 
 /** Result of a single (server, agent) write. Rust enum internally tagged
@@ -1081,6 +1084,13 @@ export interface UpgradePlan {
   commands: string[];
   latest_version: string | null;
 }
+
+/** Apply result, tagged like WriteOutcome. `plan_changed` means the live
+ *  re-derivation no longer matches what the confirm dialog showed: nothing
+ *  ran, and the fresh plan must be re-confirmed (ADR-0006 §1). */
+export type ApplyUpgradeOutcome =
+  | { status: "ran"; output: string }
+  | { status: "plan_changed"; plan: UpgradePlan };
 
 export interface ProbeStateDto {
   probe_status: ProbeState;
@@ -1142,4 +1152,5 @@ export const getMcpUpgradePlan = (id: string) =>
   invoke<UpgradePlan>("get_mcp_upgrade_plan", { id });
 
 /** Runs the server-side re-derived plan; returns the combined command output. */
-export const applyMcpUpgrade = (id: string) => invoke<string>("apply_mcp_upgrade", { id });
+export const applyMcpUpgrade = (id: string, approvedCommands: string[]) =>
+  invoke<ApplyUpgradeOutcome>("apply_mcp_upgrade", { id, approvedCommands });

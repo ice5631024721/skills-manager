@@ -1174,16 +1174,11 @@
       "readFailed": "Read failed",
       "serverCount": "{{servers}} servers"
     },
-    "state": {
-      "enabled": "Enabled",
-      "disabled": "Disabled",
-      "registered": "Registered"
-    },
+    "state": "agent-native switch: off",
     "envKeysOnly": "key names only",
     "configFiles": "{{count}} config files",
     "noEndpoint": "(no command or URL)",
     "libraryEmpty": "Nothing managed yet — add a definition, then sync it to your agents.",
-    "libraryLoadFailed": "Could not load the managed library",
     "addServer": "Add server",
     "editServer": "Edit server",
     "deleteServer": "Delete server",
@@ -1287,6 +1282,9 @@
     "batchDelete": "Delete ({{count}})",
     "batchDeleteConfirmBody": "Removes {{count}} definitions from the library and from every agent they are synced to.",
     "batchDeleteDone": "Deleted {{count}} definitions",
-    "batchDeleteKept": "{{count}} definitions kept — the drifted agents were left untouched"
+    "batchDeleteKept": "{{count}} definitions kept — the drifted agents were left untouched",
+    "foreignOverwriteTitle": "Overwrite a foreign entry?",
+    "foreignOverwriteBody": "{{agent}} has a hand-written entry named {{name}} that the library never wrote. Confirming replaces it with the managed definition.",
+    "upgradePlanChanged": "{{name}}: the upgrade plan changed since the dialog opened — review the fresh command list"
   }
 }

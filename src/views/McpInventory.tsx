@@ -126,9 +126,9 @@ interface AgentPickDialogProps {
   onClose: () => void;
 }
 
-/** ConfirmDialog-styled one-of-N list over agents. Used both to pick which
- *  agent's copy becomes the managed definition (takeover) and which agent a
- *  batch sync targets. */
+/** ConfirmDialog-styled one-of-N list over agents. Used to pick which agent
+ *  a batch sync targets. (Takeover no longer asks: it claims every copy and
+ *  divergent ones surface as variant dots.) */
 function AgentPickDialog({ title, message, rows, onPick, onClose }: AgentPickDialogProps) {
   const { t } = useTranslation();
 
@@ -215,8 +215,13 @@ export function McpInventory() {
   /** THE reload: inventory + library in one shot. Every mutation and the
    *  rescan button go through here, so the two data sources can never
    *  disagree on screen (the old bug: mutations re-pulled only the library). */
+  const loadGenRef = useRef(0);
   const load = useCallback(
     async (initial: boolean) => {
+      // Generation guard (house pattern, MySkills/ProjectDetail): refreshAll
+      // and probe-then-refresh fire concurrent loads; without this a slow
+      // earlier response can overwrite a fresher one.
+      const gen = ++loadGenRef.current;
       if (initial) {
         setLoading(true);
         setError(null);
@@ -226,14 +231,16 @@ export function McpInventory() {
           api.getMcpInventory(),
           api.getMcpLibrary(),
         ]);
+        if (loadGenRef.current !== gen) return;
         setReport(inventory);
         setLibraryServers(library.servers);
       } catch (err) {
+        if (loadGenRef.current !== gen) return;
         const message = getErrorMessage(err, t("common.error"));
         if (initial) setError(message);
         else toast.error(t("mcp.refreshFailed", { message }));
       } finally {
-        if (initial) setLoading(false);
+        if (initial && loadGenRef.current === gen) setLoading(false);
       }
     },
     [t],
@@ -506,7 +513,7 @@ export function McpInventory() {
     async (name: string, occurrences: McpServerOccurrence[]): Promise<boolean> => {
       setBusyTakeoverName(name);
       try {
-        let failed = 0;
+        const failedAgents: string[] = [];
         for (const occurrence of occurrences) {
           try {
             // First agent creates the definition; the rest claim their
@@ -514,20 +521,25 @@ export function McpInventory() {
             // variant dots, they are never silently rewritten.
             await api.takeoverMcpEntry(occurrence.agent_key, name);
           } catch (err) {
-            failed += 1;
-            toast.error(t("mcp.takeoverFailed", { name }), {
-              description: getErrorMessage(err, t("common.error")),
-            });
+            failedAgents.push(
+              `${agentName(occurrence.agent_key)}: ${getErrorMessage(err, t("common.error"))}`,
+            );
           }
         }
-        if (failed === 0) toast.success(t("mcp.takeoverDone", { name }));
-        return failed === 0;
+        // One aggregated toast per card, not one per failed agent: a wide
+        // batch must not storm the corner.
+        if (failedAgents.length === 0) toast.success(t("mcp.takeoverDone", { name }));
+        else
+          toast.error(t("mcp.takeoverFailed", { name }), {
+            description: failedAgents.join(" · "),
+          });
+        return failedAgents.length === 0;
       } finally {
         setBusyTakeoverName(null);
         await load(false);
       }
     },
-    [load, t],
+    [agentName, load, t],
   );
 
   const handleTakeoverCard = useCallback(
@@ -592,7 +604,9 @@ export function McpInventory() {
         if (cancelledCount > 0) {
           toast.info(t("mcp.batchSyncToSkipped", { count: cancelledCount }));
         }
-        exitMultiSelect();
+        // Keep the selection when nothing landed so the batch can be
+        // retried, same affordance as batch takeover.
+        if (doneServers.length > 0) exitMultiSelect();
       };
       if (drifts.length === 0) {
         finish(landed, 0);
@@ -655,7 +669,7 @@ export function McpInventory() {
       setBatchBusy(false);
       if (done > 0) toast.success(t("mcp.batchDeleteDone", { count: done }));
       if (kept > 0) toast.info(t("mcp.batchDeleteKept", { count: kept }));
-      exitMultiSelect();
+      if (done > 0) exitMultiSelect();
     };
     if (drifts.length === 0) {
       settle(deleted.length, 0);
@@ -692,9 +706,16 @@ export function McpInventory() {
   // ── confirm-request runners (single managed card) ──
 
   const runUpgrade = useCallback(
-    async (server: McpServerDto) => {
+    async (server: McpServerDto, plan: UpgradePlan) => {
       try {
-        await api.applyMcpUpgrade(server.id);
+        // Send back exactly what the dialog showed: the backend re-derives
+        // and refuses to run anything the user did not see (plan_changed).
+        const outcome = await api.applyMcpUpgrade(server.id, plan.commands);
+        if (outcome.status === "plan_changed") {
+          toast.info(t("mcp.upgradePlanChanged", { name: server.name }));
+          setConfirmRequest({ kind: "upgrade", server, plan: outcome.plan });
+          return;
+        }
         toast.success(t("mcp.upgradeDone", { name: server.name }), {
           description: t("mcp.upgradeReconnectHint"),
         });
@@ -1157,7 +1178,7 @@ export function McpInventory() {
           <span className="text-[13px] leading-5 text-muted">{t("mcp.subtitle")}</span>
           {report && (
             <span className="text-[12px] text-faint">
-              {t("mcp.summary", { servers: report.servers.length, agents: agentCount })}
+              {t("mcp.summary", { servers: cards.length, agents: agentCount })}
             </span>
           )}
         </div>
@@ -1331,7 +1352,7 @@ export function McpInventory() {
             </div>
           }
           onClose={() => setConfirmRequest(null)}
-          onConfirm={() => runUpgrade(confirmRequest.server)}
+          onConfirm={() => runUpgrade(confirmRequest.server, confirmRequest.plan)}
         />
       )}
 

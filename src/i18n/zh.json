@@ -1162,7 +1162,7 @@
   },
   "mcp": {
     "title": "MCP 清单",
-    "subtitle": "本机各 agent 已配置的 MCP 服务。托管定义会写入这些配置文件——但只在你确认的操作里发生。",
+    "subtitle": "本机各 agent 已配置的 MCP server。托管定义会写入这些配置文件——但只在你确认的操作里发生。",
     "rescan": "重新扫描",
     "scanning": "扫描中…",
     "summary": "共 {{servers}} 个 MCP · {{agents}} 个 agent",
@@ -1174,16 +1174,11 @@
       "readFailed": "读取失败",
       "serverCount": "{{servers}} 个 MCP"
     },
-    "state": {
-      "enabled": "已启用",
-      "disabled": "已禁用",
-      "registered": "已注册"
-    },
+    "state": "原生开关：关",
     "envKeysOnly": "仅显示键名",
     "configFiles": "{{count}} 个配置文件",
     "noEndpoint": "（无命令或 URL）",
     "libraryEmpty": "还没有托管条目——先添加定义，再同步到各 agent。",
-    "libraryLoadFailed": "托管定义库加载失败",
     "addServer": "添加 MCP",
     "editServer": "编辑 MCP",
     "deleteServer": "删除 MCP",
@@ -1287,6 +1282,9 @@
     "batchDelete": "批量删除（{{count}}）",
     "batchDeleteConfirmBody": "将从定义库删除 {{count}} 个定义，并从它们同步到的每个 agent 中移除。",
     "batchDeleteDone": "已删除 {{count}} 个定义",
-    "batchDeleteKept": "{{count}} 个定义已保留，漂移的 agent 未被改动"
+    "batchDeleteKept": "{{count}} 个定义已保留，漂移的 agent 未被改动",
+    "foreignOverwriteTitle": "覆盖外来条目？",
+    "foreignOverwriteBody": "{{agent}} 里有一条手写的 {{name}}，不是定义库写的。确认后将用托管定义替换它。",
+    "upgradePlanChanged": "{{name}} 的升级计划在你打开确认框后变了——请核对新的命令清单"
   }
 }
