@@ -13,16 +13,36 @@ _Avoid_: 把某类型的表结构泛化成通用 resource 表
 ### MCP
 
 **MCP Server（MCP 服务器定义）**:
-本系统管理的最小 MCP 单元：一条服务器定义（名字 + stdio 启动命令或远程 URL + env）。指配置条目，不是运行中的进程——stdio 进程由 agent 自己拉起，manager 只做配置管理。当前版本（v1）只识别、不写入。
-_Avoid_: MCP 服务（含糊）、把定义与进程混为一谈
+本系统管理的最小 MCP 单元：一条服务器定义（名字 + stdio 启动命令或远程 URL + env）。指配置条目，不是运行中的进程——stdio 进程由 agent 自己拉起，manager 只做配置管理。manager 可做一次性探活，不托管进程。
+_Avoid_: MCP 服务（含糊）、把定义与进程混为一谈、把探活当保活
+
+**MCP Library（MCP 定义库）**:
+manager 侧托管条目的真源集合。"添加 MCP"= 在此新增定义；写进 agent 配置文件只是部署。
+_Avoid_: 把清单当定义库
 
 **MCP Inventory（MCP 清单）**:
-只读扫描受支持 agent 的 MCP 配置得到的本机现状：装了什么 MCP、分别在哪些 agent 里，以及传输类型、启动命令/URL、env 键名、来源文件。按服务器名跨 agent 聚合，是 v1 唯一的 MCP 界面能力。
-_Avoid_: 把清单当成中央定义库（清单是现状快照，定义库是将来的写入真源）
+扫描受支持 agent 的 MCP 配置得到的本机现状快照，按服务器名跨 agent 聚合；是发现与接管外来条目的来源，不是真源。
+_Avoid_: 把清单当成中央定义库
 
 **Managed / Foreign Entry（托管条目 / 外来条目）**:
-方向已定、v1 未实现：由 manager 导入或新建的条目为托管条目，agent 侧以 manager 为准，可更新、可移除；用户日后直接在 agent 配置里手加的条目为外来条目，只读展示、可一键接管。
+由 manager 导入或新建的条目为托管条目，agent 侧以 manager 为准，可更新、可移除；用户直接在 agent 配置里手加的条目为外来条目，只读展示、可一键接管。
 _Avoid_: 把外来条目当作托管条目去改写
+
+**Binding（绑定）**:
+"某定义已写入某 agent"的关系记录，携带写入时条目指纹——漂移检测与取消同步的依据。对应 skill 侧的同步目标。
+_Avoid_: 把绑定与定义本身混为一谈
+
+**Upstream Source（上游源）**:
+定义背后软件的出处（npm / npx / PyPI(uvx) / git / 无）。"更新"针对上游源：升级制品本身，agent 配置通常不变。
+_Avoid_: 把更新等同于编辑定义或重写配置
+
+**Probe（探活）**:
+manager 对定义的一次性拉起测试：stdio 启动并完成 MCP initialize 握手后退出；http 直接对端点握手。结果是健康状态，不是运行实例。
+_Avoid_: 进程监管
+
+**Drift（漂移）**:
+托管条目被 manager 写入后，在 agent 侧又被手改的状态。任何覆盖或删除前必须显出漂移并请用户确认。
+_Avoid_: 静默覆盖
 
 ### 技能
 
