@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 9;
+const LATEST_VERSION: u32 = 10;
 
 /// Run all pending migrations on the database.
 ///
@@ -56,6 +56,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         6 => migrate_v6_to_v7(conn),
         7 => migrate_v7_to_v8(conn),
         8 => migrate_v8_to_v9(conn),
+        9 => migrate_v9_to_v10(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -431,6 +432,55 @@ fn backfill_skill_sources(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v9 → v10: MCP definition library (ADR-0006 §1–§3).
+///
+/// - `mcp_servers`: the **Managed library** — one row per user-owned server
+///   definition. `name` is UNIQUE (identity, ADR-0006 §3); `args`, `env` and
+///   `source` are JSON TEXT because they are open-shaped structures the store
+///   (de)serializes whole, and sqlite has no native map/array type. `env`
+///   values stay plaintext in the DB (masked only in the UI, ADR-0006 global
+///   constraints). The check/probe columns mirror `skills`' update-check
+///   vocabulary so the same badge logic applies.
+/// - `mcp_bindings`: the per-agent deployment ledger. One row per
+///   (server, agent) pair, recording the entry `fingerprint` at write time so
+///   drift (hand-edit of the agent config) is detectable. `ON DELETE CASCADE`
+///   means deleting a definition removes its ledger, not the agent file — the
+///   writers clean those up explicitly before the row goes away.
+fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+          id TEXT PRIMARY KEY,
+          name TEXT UNIQUE NOT NULL,
+          transport TEXT NOT NULL,
+          command TEXT,
+          args TEXT NOT NULL DEFAULT '[]',
+          url TEXT,
+          env TEXT NOT NULL DEFAULT '{}',
+          source TEXT NOT NULL DEFAULT '{\"kind\":\"none\"}',
+          update_status TEXT NOT NULL DEFAULT 'unknown',
+          remote_version TEXT,
+          last_checked_at INTEGER,
+          last_check_error TEXT,
+          probe_status TEXT NOT NULL DEFAULT 'pending',
+          probe_message TEXT,
+          probe_checked_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mcp_bindings (
+          id TEXT PRIMARY KEY,
+          server_id TEXT NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+          agent_key TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          written_at INTEGER NOT NULL,
+          UNIQUE(server_id, agent_key)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -499,6 +549,8 @@ mod tests {
         assert!(tables.contains(&"skill_tags".to_string()));
         assert!(tables.contains(&"scenario_skill_tools".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
+        assert!(tables.contains(&"mcp_servers".to_string()));
+        assert!(tables.contains(&"mcp_bindings".to_string()));
     }
 
     #[test]

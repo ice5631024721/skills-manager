@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use super::audit_log::{AuditDraft, AuditEntry, MAX_ENTRIES as AUDIT_MAX_ENTRIES};
 use super::crypto;
@@ -134,6 +134,16 @@ pub struct SkillSourceLink {
 }
 
 impl SkillStore {
+    /// Shared handle to the underlying connection, already mutex-locked.
+    ///
+    /// Table-group modules (e.g. `mcp_store`) implement their CRUD in their
+    /// own `impl SkillStore` block; without this accessor they could not touch
+    /// the private `conn` field. One accessor keeps the single-mutex invariant
+    /// instead of duplicating the connection behind a second lock.
+    pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
+    }
+
     pub fn new(db_path: &PathBuf) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         // busy_timeout makes concurrent CLI + GUI writers wait briefly instead
