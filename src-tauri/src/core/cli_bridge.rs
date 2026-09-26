@@ -174,17 +174,30 @@ pub fn ensure_bridge(app_version: &str) {
     }
 }
 
-fn ensure_bridge_inner(app_version: &str) -> Result<PathBuf> {
-    // Fast path: this version already published and still present. Checked
-    // before anything is removed so an ordinary launch does not spend 15 MB of
-    // copying, and so a running agent's binary is not disturbed for no reason.
-    if read_stamp().as_deref() == Some(app_version) && bridge_path().is_file() {
-        return Ok(bridge_path());
-    }
-    publish_from(&bundled_cli()?, app_version)
+/// The stamp/verify tag: app version PLUS the DB schema the binary speaks.
+/// Same-version dev builds that migrate the schema would otherwise pass both
+/// the stamp fast-path and the `--version` verify while publishing a CLI that
+/// refuses the user's database (observed live: a schema-8 CLI against a v10
+/// DB, because every build of this cycle shipped as "1.40.0").
+pub fn bridge_version_tag(app_version: &str) -> String {
+    format!(
+        "{app_version}+schema{}",
+        crate::core::migrations::LATEST_VERSION
+    )
 }
 
-fn publish_from(source: &Path, app_version: &str) -> Result<PathBuf> {
+fn ensure_bridge_inner(app_version: &str) -> Result<PathBuf> {
+    let tag = bridge_version_tag(app_version);
+    // Fast path: this exact build already published and still present. Checked
+    // before anything is removed so an ordinary launch does not spend 15 MB of
+    // copying, and so a running agent's binary is not disturbed for no reason.
+    if read_stamp().as_deref() == Some(tag.as_str()) && bridge_path().is_file() {
+        return Ok(bridge_path());
+    }
+    publish_from(&bundled_cli()?, &tag)
+}
+
+fn publish_from(source: &Path, version_tag: &str) -> Result<PathBuf> {
     let target = bridge_path();
 
     // From here the bridge is not to be trusted until the new copy lands.
@@ -207,7 +220,7 @@ fn publish_from(source: &Path, app_version: &str) -> Result<PathBuf> {
             .context("could not make the staged CLI executable")?;
     }
 
-    if let Err(e) = verify(&staged, app_version) {
+    if let Err(e) = verify(&staged, version_tag) {
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
@@ -222,11 +235,11 @@ fn publish_from(source: &Path, app_version: &str) -> Result<PathBuf> {
         )
     })?;
 
-    std::fs::write(stamp_path(), app_version)
+    std::fs::write(stamp_path(), version_tag)
         .with_context(|| format!("could not write {}", stamp_path().display()))?;
 
     log::info!(
-        "cli bridge: published {app_version} to {}",
+        "cli bridge: published {version_tag} to {}",
         target.display()
     );
     Ok(target)
@@ -258,11 +271,12 @@ mod tests {
         let src_dir = tmp.path().join("bundle");
         std::fs::create_dir_all(&src_dir).unwrap();
 
-        let source = fake_cli(&src_dir, "9.9.9");
-        publish_from(&source, "9.9.9").expect("a runnable copy must publish");
+        let tag = bridge_version_tag("9.9.9");
+        let source = fake_cli(&src_dir, &tag);
+        publish_from(&source, &tag).expect("a runnable copy must publish");
 
         assert!(bridge_path().is_file());
-        assert_eq!(read_stamp().as_deref(), Some("9.9.9"));
+        assert_eq!(read_stamp().as_deref(), Some(tag.as_str()));
 
         central_repo::set_test_home_dir_override(None);
     }
@@ -284,7 +298,8 @@ mod tests {
         let src_dir = tmp.path().join("bundle");
         std::fs::create_dir_all(&src_dir).unwrap();
 
-        publish_from(&fake_cli(&src_dir, "9.9.9"), "9.9.9").unwrap();
+        let tag = bridge_version_tag("9.9.9");
+        publish_from(&fake_cli(&src_dir, &tag), &tag).unwrap();
         let stamp = bridge_dir().join(".version");
 
         // Nothing here can be removed (the directory denies writes) and the
@@ -305,7 +320,8 @@ mod tests {
         );
         // And the publish that would follow must not run.
         std::fs::set_permissions(bridge_dir(), std::fs::Permissions::from_mode(0o500)).unwrap();
-        let publish = publish_from(&fake_cli(&src_dir, "9.9.10"), "9.9.10");
+        let tag10 = bridge_version_tag("9.9.10");
+        let publish = publish_from(&fake_cli(&src_dir, &tag10), &tag10);
         std::fs::set_permissions(bridge_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
         publish.expect_err("publishing must abandon rather than leave a lying stamp");
 
@@ -326,10 +342,11 @@ mod tests {
         let src_dir = tmp.path().join("bundle");
         std::fs::create_dir_all(&src_dir).unwrap();
 
-        publish_from(&fake_cli(&src_dir, "9.9.9"), "9.9.9").unwrap();
+        let tag = bridge_version_tag("9.9.9");
+        publish_from(&fake_cli(&src_dir, &tag), &tag).unwrap();
         assert_eq!(
             read_stamp().as_deref(),
-            Some("9.9.9"),
+            Some(tag.as_str()),
             "precondition: a good bridge exists"
         );
 
@@ -337,7 +354,8 @@ mod tests {
         // a blocked binary, the wrong architecture.
         let broken = src_dir.join("broken-cli");
         std::fs::write(&broken, "not executable").unwrap();
-        publish_from(&broken, "9.9.10").expect_err("an unrunnable copy must not publish");
+        publish_from(&broken, &bridge_version_tag("9.9.10"))
+            .expect_err("an unrunnable copy must not publish");
 
         assert!(
             read_stamp().is_none(),

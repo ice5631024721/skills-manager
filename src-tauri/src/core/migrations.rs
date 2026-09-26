@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 10;
+pub const LATEST_VERSION: u32 = 10;
 
 /// Run all pending migrations on the database.
 ///

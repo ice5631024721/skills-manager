@@ -12,9 +12,18 @@ use app_lib::core::{
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 
+/// The bridge stamps and verifies with app-version+schema; the CLI must
+/// report exactly that token, or a stale published copy would pass both
+/// checks and then refuse the user's database at runtime.
+fn cli_version() -> &'static str {
+    Box::leak(
+        app_lib::core::cli_bridge::bridge_version_tag(env!("CARGO_PKG_VERSION")).into_boxed_str(),
+    )
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "skills-manager-cli")]
-#[command(about = "Shared-core CLI for skills-manager", version)]
+#[command(about = "Shared-core CLI for skills-manager", version = cli_version())]
 struct Cli {
     #[arg(long, global = true)]
     json: bool,
