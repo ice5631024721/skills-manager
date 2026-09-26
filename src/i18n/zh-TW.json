@@ -1197,7 +1197,8 @@
       "synced": "已同步",
       "drift": "有漂移",
       "agentUnavailable": "agent 不可用",
-      "foreignHere": "此處有外來條目"
+      "foreignHere": "此處有外來條目",
+      "variant": "執行自己的命令（接管時保留）——點擊對齊到定義"
     },
     "probeNow": "探活",
     "probePassed": "探活通過",
@@ -1269,9 +1270,6 @@
     "validationSourceValueRequired": "請填寫所選上游源的包名或倉庫位址",
     "validationPasteEmpty": "沒有可新增的內容——請至少貼上一個 MCP 條目",
     "refreshFailed": "重新整理失敗：{{message}}",
-    "takeoverPick": "從哪個 agent 接管？",
-    "takeoverPickBody": "{{name}} 在各 agent 裡的命令不一致。用哪個作為託管定義？",
-    "takeoverDiffers": "{{name}} 已接管，但部分 agent 的副本與託管定義不一致——點擊虛線圓點確認覆蓋",
     "selectMode": "多選",
     "cancelSelect": "取消多選",
     "selectHint": "點擊卡片開始選擇",

@@ -1197,7 +1197,8 @@
       "synced": "Synced",
       "drift": "Drifted",
       "agentUnavailable": "Agent unavailable",
-      "foreignHere": "Foreign entry here"
+      "foreignHere": "Foreign entry here",
+      "variant": "Runs its own command (kept at takeover) — click to align to the definition"
     },
     "probeNow": "Probe now",
     "probePassed": "Probe passed",
@@ -1269,9 +1270,6 @@
     "validationSourceValueRequired": "Enter the package or repo URL for the chosen source",
     "validationPasteEmpty": "Nothing to add — paste at least one server entry",
     "refreshFailed": "Refresh failed: {{message}}",
-    "takeoverPick": "Take over from which agent?",
-    "takeoverPickBody": "The agents' copies of {{name}} run different commands. Which one becomes the managed definition?",
-    "takeoverDiffers": "{{name}} taken over, but some agents' copies differ — click their dashed dots to review the overwrite",
     "selectMode": "Select",
     "cancelSelect": "Cancel selection",
     "selectHint": "Click a card to select",

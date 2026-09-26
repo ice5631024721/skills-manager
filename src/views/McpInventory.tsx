@@ -64,13 +64,6 @@ function occurrenceEndpoint(occurrence: McpServerOccurrence): string {
   return occurrence.command || occurrence.url || "";
 }
 
-/** The takeover loop distinguishes "claim in place" from "differs" by the
- *  backend's error text (commit 22933c5): equivalents are claimed silently,
- *  divergent copies say so and defer to the overwrite confirmation. */
-function isDiffersError(err: unknown): boolean {
-  return getErrorMessage(err, "").includes("differs");
-}
-
 // ── Managed library (ADR-0006) + inventory, merged by name ──
 
 /** One card per server NAME: the union of library records and inventory
@@ -207,11 +200,8 @@ export function McpInventory() {
   const [addDialog, setAddDialog] = useState<McpAddDialogState | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<McpConfirmRequest | null>(null);
   const [driftChain, setDriftChain] = useState<McpDriftChain | null>(null);
-  // Takeover pickers and batch flows (single grid, one card per name).
-  const [takeoverPick, setTakeoverPick] = useState<{
-    name: string;
-    occurrences: McpServerOccurrence[];
-  } | null>(null);
+  // Takeover needs no picker: adoption is consent, divergent copies are
+  // claimed in place and surface as variant dots (backend 00d89da).
   const [batchSyncPickOpen, setBatchSyncPickOpen] = useState(false);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   // (card name, agent) whose dot is mid-write; and the card whose takeover
@@ -312,7 +302,6 @@ export function McpInventory() {
     addDialog !== null ||
     confirmRequest !== null ||
     driftChain !== null ||
-    takeoverPick !== null ||
     batchSyncPickOpen ||
     batchDeleteOpen;
 
@@ -514,32 +503,25 @@ export function McpInventory() {
    *  then claimed in place — except copies that read back different, which
    *  keep their foreign-here dot and resolve through the overwrite chain. */
   const runTakeoverLoop = useCallback(
-    async (name: string, occurrences: McpServerOccurrence[], firstAgent: string): Promise<boolean> => {
+    async (name: string, occurrences: McpServerOccurrence[]): Promise<boolean> => {
       setBusyTakeoverName(name);
       try {
-        try {
-          await api.takeoverMcpEntry(firstAgent, name);
-        } catch (err) {
-          toast.error(t("mcp.takeoverFailed", { name }), {
-            description: getErrorMessage(err, t("common.error")),
-          });
-          return false;
-        }
-        let differs = 0;
+        let failed = 0;
         for (const occurrence of occurrences) {
-          if (occurrence.agent_key === firstAgent) continue;
           try {
+            // First agent creates the definition; the rest claim their
+            // copies in place — divergent commands stay live and show as
+            // variant dots, they are never silently rewritten.
             await api.takeoverMcpEntry(occurrence.agent_key, name);
           } catch (err) {
-            if (isDiffersError(err)) differs += 1;
-            else toast.error(t("mcp.takeoverFailed", { name }), {
+            failed += 1;
+            toast.error(t("mcp.takeoverFailed", { name }), {
               description: getErrorMessage(err, t("common.error")),
             });
           }
         }
-        toast.success(t("mcp.takeoverDone", { name }));
-        if (differs > 0) toast.warning(t("mcp.takeoverDiffers", { name }));
-        return true;
+        if (failed === 0) toast.success(t("mcp.takeoverDone", { name }));
+        return failed === 0;
       } finally {
         setBusyTakeoverName(null);
         await load(false);
@@ -550,14 +532,8 @@ export function McpInventory() {
 
   const handleTakeoverCard = useCallback(
     (summary: McpServerSummary) => {
-      const occurrences = summary.agents;
-      if (occurrences.length === 0) return;
-      const commands = new Set(occurrences.map(occurrenceEndpoint));
-      if (commands.size <= 1) {
-        void runTakeoverLoop(summary.name, occurrences, occurrences[0].agent_key);
-        return;
-      }
-      setTakeoverPick({ name: summary.name, occurrences });
+      if (summary.agents.length === 0) return;
+      void runTakeoverLoop(summary.name, summary.agents);
     },
     [runTakeoverLoop],
   );
@@ -572,7 +548,7 @@ export function McpInventory() {
         // Divergent copies in a batch take the first occurrence as the
         // definition of record; the rest claim in place or keep their
         // foreign-here dot for a later overwrite.
-        if (await runTakeoverLoop(card.name, occurrences, occurrences[0].agent_key)) done += 1;
+        if (await runTakeoverLoop(card.name, occurrences)) done += 1;
       }
     } finally {
       setBatchBusy(false);
@@ -1312,24 +1288,6 @@ export function McpInventory() {
       )}
 
       {driftChain && <McpDriftDialog chain={driftChain} />}
-
-      {takeoverPick && (
-        <AgentPickDialog
-          title={t("mcp.takeoverPick")}
-          message={t("mcp.takeoverPickBody", { name: takeoverPick.name })}
-          rows={takeoverPick.occurrences.map((occurrence) => ({
-            agentKey: occurrence.agent_key,
-            displayName: occurrence.agent_display_name,
-            sub: occurrenceEndpoint(occurrence) || t("mcp.noEndpoint"),
-          }))}
-          onPick={(agentKey) => {
-            const { name, occurrences } = takeoverPick;
-            setTakeoverPick(null);
-            void runTakeoverLoop(name, occurrences, agentKey);
-          }}
-          onClose={() => setTakeoverPick(null)}
-        />
-      )}
 
       {batchSyncPickOpen && (
         <AgentPickDialog

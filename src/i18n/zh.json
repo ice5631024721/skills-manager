@@ -1197,7 +1197,8 @@
       "synced": "已同步",
       "drift": "有漂移",
       "agentUnavailable": "agent 不可用",
-      "foreignHere": "此处有外来条目"
+      "foreignHere": "此处有外来条目",
+      "variant": "运行自己的命令（接管时保留）——点击对齐到定义"
     },
     "probeNow": "探活",
     "probePassed": "探活通过",
@@ -1269,9 +1270,6 @@
     "validationSourceValueRequired": "请填写所选上游源的包名或仓库地址",
     "validationPasteEmpty": "没有可添加的内容——请至少粘贴一个 MCP 条目",
     "refreshFailed": "刷新失败：{{message}}",
-    "takeoverPick": "从哪个 agent 接管？",
-    "takeoverPickBody": "{{name}} 在各 agent 里的命令不一致。用哪个作为托管定义？",
-    "takeoverDiffers": "{{name}} 已接管，但部分 agent 的副本与托管定义不一致——点击虚线圆点确认覆盖",
     "selectMode": "多选",
     "cancelSelect": "取消多选",
     "selectHint": "点击卡片开始选择",

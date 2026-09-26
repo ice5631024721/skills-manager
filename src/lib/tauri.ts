@@ -1020,6 +1020,8 @@ export interface McpBindingDto {
   drift: boolean;
   /** Why the live entry differs from the ledger (file gone, hand-edited…). */
   drift_reason: string | null;
+  /** The agent runs its own command kept from takeover (adopted as-is). */
+  variant: boolean;
 }
 
 /** A Managed library definition plus its deployment ledger: the Rust

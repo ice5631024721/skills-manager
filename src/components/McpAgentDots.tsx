@@ -9,6 +9,9 @@ import { hasAgentIcon, shortLabel } from "../lib/agentIcons";
  * synced  — binding present, no drift. Click unsyncs (through the drift chain
  *           if the write comes back pending).
  * drift   — binding present, live copy differs from the ledger (amber ring).
+ * variant — binding present and matching the ledger, but the agent runs its
+ *           own command kept from takeover (violet ring). Not drift: nobody
+ *           changed anything. Click aligns the agent to the definition.
  * foreign — the inventory has an entry for this name in this agent but there
  *           is NO binding (dashed grey-blue ring). On a managed card the
  *           click proposes an overwrite (sync → backend returns pending_drift
@@ -17,7 +20,7 @@ import { hasAgentIcon, shortLabel } from "../lib/agentIcons";
  * absent  — managed cards only: neither binding nor inventory entry. Dim.
  * orphan  — binding on an agent the scan no longer reports as installed.
  */
-type DotState = "synced" | "drift" | "foreign" | "absent" | "orphan";
+type DotState = "synced" | "drift" | "variant" | "foreign" | "absent" | "orphan";
 
 interface Dot {
   key: string;
@@ -93,7 +96,9 @@ export function McpAgentDots({
               : "absent"
             : binding.drift
               ? "drift"
-              : "synced";
+              : binding.variant
+                ? "variant"
+                : "synced";
           return {
             key: agent.agent_key,
             displayName: agent.display_name,
@@ -122,6 +127,7 @@ export function McpAgentDots({
   const iconStateClass: Record<DotState, string> = {
     synced: "bg-surface",
     drift: "ring-1 ring-inset ring-amber-500/60 bg-surface",
+    variant: "ring-1 ring-inset ring-violet-500/60 bg-surface",
     foreign:
       "bg-surface outline outline-1 -outline-offset-1 outline-dashed outline-slate-400/80 dark:outline-slate-300/50",
     absent: "bg-surface opacity-45",
@@ -131,6 +137,8 @@ export function McpAgentDots({
   const textStateClass: Record<DotState, string> = {
     synced: "border-transparent bg-[var(--color-text-primary)] text-[var(--color-bg)]",
     drift: "border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    variant:
+      "border border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400",
     foreign:
       "border border-dashed border-slate-400/80 bg-slate-400/10 text-slate-600 dark:border-slate-300/50 dark:text-slate-300",
     absent: "border border-border-subtle bg-surface-hover text-faint",
@@ -141,6 +149,7 @@ export function McpAgentDots({
   const stateTitle: Record<DotState, string> = {
     synced: ` · ${t("mcp.dot.synced")}`,
     drift: ` · ${t("mcp.dot.drift")}`,
+    variant: ` · ${t("mcp.dot.variant")}`,
     foreign: ` · ${t("mcp.dot.foreignHere")}`,
     absent: "",
     orphan: ` · ${t("mcp.dot.agentUnavailable")}`,
@@ -149,9 +158,12 @@ export function McpAgentDots({
   // A dot with a binding is a click-to-unsync; a free one is click-to-sync
   // (managed) or click-to-take-over (foreign); the foreign dot on a managed
   // card syncs too — the backend turns that into an overwrite confirmation.
+  // A variant dot clicks to ALIGN (sync the definition over the kept copy),
+  // so it counts as "free" here even though a binding exists.
   const hasBinding: Record<DotState, boolean> = {
     synced: true,
     drift: true,
+    variant: false,
     foreign: false,
     absent: false,
     orphan: true,
