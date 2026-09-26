@@ -643,8 +643,16 @@ export function McpInventory() {
           if (cancelled === null) {
             finish([...landed, ...drifts.map((d) => d.server)], 0);
           } else {
-            const cancelledTokens = new Set(cancelled.map((d) => d.token));
-            const approved = drifts.filter((d) => !cancelledTokens.has(d.pending.token));
+            // Resolve cancelled tokens to servers through byToken: the
+            // chain re-mints tokens mid-flight, so comparing against the
+            // ORIGINAL pending tokens would count a re-minted cancellation
+            // as approved and toast "synced" for a server never written.
+            const cancelledServers = new Set(
+              cancelled
+                .map((d) => byToken.get(d.token))
+                .filter((s): s is McpServerDto => s !== undefined),
+            );
+            const approved = drifts.filter((d) => !cancelledServers.has(d.server));
             finish(
               [...landed, ...approved.map((d) => d.server)],
               cancelled.length,
@@ -707,10 +715,14 @@ export function McpInventory() {
         if (cancelled === null) {
           settle(deleted.length + drifts.length, 0);
         } else {
-          const cancelledTokens = new Set(cancelled.map((d) => d.token));
-          const kept = drifts.filter((d) =>
-            d.list.some((pending) => cancelledTokens.has(pending.token)),
-          ).length;
+          // Same re-minted-token reasoning as runBatchSyncTo: resolve via
+          // byToken, never via the original pending tokens.
+          const cancelledServers = new Set(
+            cancelled
+              .map((d) => byToken.get(d.token))
+              .filter((s): s is string => s !== undefined),
+          );
+          const kept = drifts.filter((d) => cancelledServers.has(d.server.id)).length;
           settle(deleted.length + drifts.length - kept, kept);
         }
       },
