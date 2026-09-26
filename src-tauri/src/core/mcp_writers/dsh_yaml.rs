@@ -117,9 +117,12 @@ impl DshYamlWriter {
     /// rather than crashing the operation — it simply cannot be attributed.
     fn find_blocks(&self, file_text: &str) -> Vec<DshBlock> {
         let lines = line_ranges(file_text);
+        // CRLF files keep the '\r' inside line ranges; the bare-dash
+        // top-item form ("-\r") would otherwise escape detection and let a
+        // block swallow the following patch on Windows-authored files.
         let item_of = |i: usize| {
             let (s, e) = lines[i];
-            &file_text[s..e]
+            file_text[s..e].trim_end_matches('\r')
         };
         let is_top_item = |i: usize| {
             let t = item_of(i);
@@ -359,9 +362,10 @@ fn render_plugin_item(entry: &McpEntryDef) -> String {
             s += &format!("        args: [{}]\n", args.join(", "));
         }
     } else {
-        // "streamable-http" / "http": label verbatim (plain scalar, like the
-        // existing entries), endpoint under `url`.
-        s += &format!("        transport: {}\n", entry.transport);
+        // "streamable-http" / "http": quoted like every other scalar we
+        // emit — an unquoted transport was a YAML injection vector
+        // ("streamable-http\n- insert:" plants a column-0 block opener).
+        s += &format!("        transport: {}\n", yaml_quote(&entry.transport));
         s += &format!("        serverName: {}\n", yaml_quote(&entry.name));
         s += &format!("        url: {}\n", yaml_quote(&entry.url.clone().unwrap_or_default()));
     }
@@ -528,6 +532,10 @@ impl McpWriter for DshYamlWriter {
             .parse_defs(file_text)?
             .into_iter()
             .find(|def| def.name == name))
+    }
+
+    fn empty_doc(&self) -> &'static str {
+        "[]"
     }
 }
 

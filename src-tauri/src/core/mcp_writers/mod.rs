@@ -152,6 +152,10 @@ pub trait McpWriter: Sync {
     /// Read the current stored definition of `name`, or `Ok(None)` when the
     /// file simply does not configure it. Env values are returned in full.
     fn read_entry(&self, file_text: &str, name: &str) -> Result<Option<McpEntryDef>, AgentWriteError>;
+    /// A minimal, valid, entry-free document in this format. Scratch space
+    /// for asking "what would this definition read back as here" (format
+    /// normalization: opencode maps streamable-http→http, drops remote env).
+    fn empty_doc(&self) -> &'static str;
 }
 
 /// Look up the surgical writer for an agent key (same keys `mcp_inventory`

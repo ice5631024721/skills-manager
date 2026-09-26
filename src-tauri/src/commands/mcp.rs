@@ -41,7 +41,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Valid starting point when an OpenCode config does not exist yet: the
 /// writer seeds this text and the atomic write then really creates the file.
-const OPENCODE_EMPTY_TEMPLATE: &str = "{\n  \"mcp\": {}\n}";
+const OPENCODE_EMPTY_TEMPLATE: &str = crate::core::mcp_writers::opencode_json::EMPTY_DOC;
 
 // ── DTOs ──
 
@@ -113,6 +113,10 @@ pub struct PendingDriftDto {
     pub token: String,
     pub current_text: String,
     pub planned_text: String,
+    /// "drift" = the ledger's own entry was changed behind our back;
+    /// "foreign" = an entry we never wrote occupies the name (CONTEXT.md
+    /// keeps the two terms distinct, so the dialog titles differ).
+    pub kind: String,
 }
 
 /// Result of a multi-agent operation (edit/delete): which agents took the
@@ -135,6 +139,17 @@ pub enum WriteOutcome {
 pub struct UpgradePlanDto {
     pub commands: Vec<String>,
     pub latest_version: Option<String>,
+}
+
+/// Upgrade apply result. `PlanChanged` closes the confirm→apply TOCTOU:
+/// the plan is re-derived from live agent files at apply time, and if it
+/// no longer equals what the dialog showed, nothing runs — the fresh plan
+/// goes back for a new confirmation (ADR-0006 §1 "exact commands").
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ApplyUpgradeOutcome {
+    Ran { output: String },
+    PlanChanged { plan: UpgradePlanDto },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -199,15 +214,10 @@ fn entry_from_record(record: &McpServerRecord) -> McpEntryDef {
 /// (opencode maps streamable-http→http, drops remote env).
 fn record_fingerprint_via(
     writer: &dyn McpWriter,
-    agent_key: &str,
     record: &McpServerRecord,
 ) -> Option<String> {
-    let scratch = match agent_key {
-        "opencode" => OPENCODE_EMPTY_TEMPLATE,
-        _ => "",
-    };
     let rendered = writer
-        .upsert(scratch, &entry_from_record(record))
+        .upsert(writer.empty_doc(), &entry_from_record(record))
         .ok()?;
     current_entry_and_fingerprint(writer, &rendered, &record.name).map(|(_, fp)| fp)
 }
@@ -235,6 +245,15 @@ fn validate_name(raw: &str) -> Result<String, AppError> {
 /// re-parse check still passes (serde_yaml reads it as a folded scalar).
 /// Tabs are legal inside scalars and never start a line, so they stay.
 fn validate_entry_scalars(entry: &McpEntryDef) -> Result<(), AppError> {
+    // The transport vocabulary is closed: the writers render it into agent
+    // configs (DSH unquoted until 8d24326-era hardening quoted it), so an
+    // arbitrary string here is a format-injection vector, not a label.
+    if !matches!(entry.transport.as_str(), "stdio" | "http" | "streamable-http") {
+        return Err(AppError::invalid_input(format!(
+            "unknown MCP transport \"{}\" (expected stdio, http or streamable-http)",
+            entry.transport
+        )));
+    }
     fn has_control(s: &str) -> bool {
         s.chars().any(|c| c.is_control() && c != '\t')
     }
@@ -428,6 +447,7 @@ pub(crate) fn write_entry_to_agent_at(
                         token,
                         current_text: text,
                         planned_text,
+                        kind: "foreign".to_string(),
                     }));
                 }
             }
@@ -451,6 +471,7 @@ pub(crate) fn write_entry_to_agent_at(
                     token,
                     current_text: text,
                     planned_text,
+                    kind: "drift".to_string(),
                 }));
             }
         }
@@ -526,6 +547,138 @@ pub(crate) fn write_entry_to_agent(
     write_with_resolver(store, record, agent_key, op, approved_drift, &resolve_agent_config)
 }
 
+/// Rename in one agent as a SINGLE atomic file operation: remove the old
+/// name and upsert the new one in the same read-modify-write, then repoint
+/// the binding row in place (never delete it).
+///
+/// The old two-phase flow (Remove everywhere, commit, Upsert everywhere)
+/// lost agents whenever a drift confirmation interrupted between phases:
+/// applied removals deleted their binding rows, so the retry re-loaded a
+/// shorter binding list and the already-cleaned agents never received the
+/// new name — their entries vanished from the configs while the ledger
+/// forgot them (ADR-0006 §3 violated). Keeping the binding row alive makes
+/// every retry see the full fleet again.
+///
+/// `dry` runs only the gates and reports what WOULD happen without touching
+/// the file or the ledger, so the caller can gate every agent before
+/// writing any (no half-renamed fleet on interruption).
+fn rename_in_agent(
+    store: &SkillStore,
+    old_record: &McpServerRecord,
+    new_record: &McpServerRecord,
+    agent_key: &str,
+    approved_drift: Option<&str>,
+    dry: bool,
+    resolve: AgentResolver,
+) -> Result<WriteOutcome, AppError> {
+    let (path, writer) = resolve(agent_key)?;
+    let _lock = RepoLock::acquire_foreground("mcp config rename").map_err(AppError::db)?;
+    let binding = store
+        .get_mcp_bindings_for_server(&old_record.id)
+        .map_err(store_err)?
+        .into_iter()
+        .find(|b| b.agent_key == agent_key)
+        .ok_or_else(|| {
+            AppError::not_found(format!("no binding for agent '{agent_key}'"))
+        })?;
+
+    let mut file_existed = true;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            if agent_key == "opencode" {
+                file_existed = false;
+                OPENCODE_EMPTY_TEMPLATE.to_string()
+            } else {
+                return Err(AppError::invalid_input("DSH patch file not found"));
+            }
+        }
+        Err(err) => return Err(AppError::io(err)),
+    };
+    let _ = file_existed; // an absent file gates as drift below (both names missing)
+
+    let planned = writer
+        .remove(&text, &old_record.name)
+        .and_then(|stripped| writer.upsert(&stripped, &entry_from_record(new_record)))
+        .map_err(writer_err)?;
+
+    let old_current = current_entry_and_fingerprint(writer, &text, &old_record.name);
+    let new_current = current_entry_and_fingerprint(writer, &text, &new_record.name);
+
+    // Already renamed by an interrupted earlier attempt: the binding was
+    // repointed then, so its fingerprint matches the new-name entry.
+    let already_done = new_current
+        .as_ref()
+        .is_some_and(|(_, fp)| *fp == binding.fingerprint);
+    // Gates: the old entry drifted from the ledger (or vanished), or a
+    // foreign/other entry occupies the new name. Either way the write
+    // takes something the user did not see in this dialog — confirm.
+    let gated = !already_done
+        && (match &old_current {
+            Some((_, fp)) => *fp != binding.fingerprint,
+            None => true,
+        } || new_current
+            .as_ref()
+            .is_some_and(|(_, fp)| *fp != binding.fingerprint));
+    if gated && !already_done {
+        let token = drift_token(
+            agent_key,
+            &new_record.name,
+            &binding.fingerprint,
+            old_record.updated_at,
+        );
+        if approved_drift != Some(token.as_str()) {
+            return Ok(WriteOutcome::PendingDrift(PendingDriftDto {
+                agent_key: agent_key.to_string(),
+                token,
+                current_text: text,
+                planned_text: planned,
+                kind: if new_current
+                    .as_ref()
+                    .is_some_and(|(_, fp)| *fp != binding.fingerprint)
+                {
+                    "foreign".to_string()
+                } else {
+                    "drift".to_string()
+                },
+            }));
+        }
+    }
+    if dry || already_done && planned == text {
+        return Ok(WriteOutcome::Applied);
+    }
+
+    if planned != text {
+        atomic_write_text(&path, &planned).map_err(writer_err)?;
+    }
+    let verify = std::fs::read_to_string(&path)
+        .map_err(|err| AppError::io(format!("re-read {} after rename: {err}", path.display())))?;
+    if current_entry_and_fingerprint(writer, &verify, &old_record.name).is_some() {
+        return Err(AppError::internal(format!(
+            "post-rename validation failed: \"{}\" still present",
+            old_record.name
+        )));
+    }
+    let new_fp = current_entry_and_fingerprint(writer, &verify, &new_record.name)
+        .map(|(_, fp)| fp)
+        .ok_or_else(|| {
+            AppError::internal(format!(
+                "post-rename validation failed: \"{}\" absent after rename",
+                new_record.name
+            ))
+        })?;
+    store
+        .upsert_mcp_binding(&McpBindingRecord {
+            id: binding.id.clone(),
+            server_id: binding.server_id.clone(),
+            agent_key: agent_key.to_string(),
+            fingerprint: new_fp,
+            written_at: now_ts(),
+        })
+        .map_err(store_err)?;
+    Ok(WriteOutcome::Applied)
+}
+
 // ── library read ──
 
 /// Every managed definition with every binding's LIVE drift verdict. Each
@@ -590,7 +743,7 @@ pub(crate) fn get_mcp_library_internal(
                         // Live and as-adopted: is it still the definition's
                         // own command, or a variant kept from takeover?
                         let variant = record.is_some_and(|record| {
-                            record_fingerprint_via(state.writer, &binding.agent_key, record)
+                            record_fingerprint_via(state.writer, record)
                                 .is_some_and(|fp| fp != binding.fingerprint)
                         });
                         (false, None, variant)
@@ -766,44 +919,62 @@ pub(crate) fn edit_mcp_server_internal(
     };
 
     if renamed {
-        // Rename = remove-old + upsert-new per bound agent (ADR-0006 §3:
-        // agent configs key entries by name, so the old name must vanish).
+        // Rename = remove-old + upsert-new per bound agent, as ONE atomic
+        // file operation each (ADR-0006 §3: agent configs key entries by
+        // name, so the old name must vanish where the new one lands).
         //
-        // Ordering keeps drift tokens replayable: the DB commit bumps
-        // `updated_at` (which the token binds), so it happens only after
-        // every bound agent has accepted the removal. A retry of a
-        // declined removal recomputes the same token from the still-old
-        // record; already-removed agents replay the Remove as a no-op.
-        let mut removed_agents: Vec<String> = Vec::new();
+        // Gate-first: pass 1 asks every agent (dry) before pass 2 writes
+        // any, so an interrupted rename never leaves half the fleet on the
+        // old name and half deleted. Binding rows are repointed in place,
+        // never deleted, so a retry after a declined confirmation still
+        // sees the full fleet and the same tokens (the commit that bumps
+        // `updated_at` — which tokens bind — happens only after every
+        // agent applied).
         for binding in &bindings {
-            match write_with_resolver(
+            if let WriteOutcome::PendingDrift(drift) = rename_in_agent(
                 store,
                 &current,
+                &updated,
                 &binding.agent_key,
-                WriteOp::Remove,
                 approved_drift,
+                true,
                 resolve,
             )? {
-                WriteOutcome::Applied => removed_agents.push(binding.agent_key.clone()),
-                WriteOutcome::PendingDrift(drift) => outcome.pending_drift.push(drift),
+                outcome.pending_drift.push(drift);
             }
         }
         if !outcome.pending_drift.is_empty() {
-            // Definition stays on the old name in the library too, so the
-            // next attempt sees the same rename and the same tokens.
             return Ok(outcome);
+        }
+        for binding in &bindings {
+            match rename_in_agent(
+                store,
+                &current,
+                &updated,
+                &binding.agent_key,
+                approved_drift,
+                false,
+                resolve,
+            )? {
+                WriteOutcome::Applied => outcome.applied.push(binding.agent_key.clone()),
+                // Race: the file moved between the two passes. Abort the
+                // rename commit — applied agents are recoverable (their
+                // binding was repointed; a retry reads them as
+                // already-renamed) and nothing is lost.
+                WriteOutcome::PendingDrift(drift) => {
+                    outcome.pending_drift.push(drift);
+                    return Ok(outcome);
+                }
+            }
         }
         updated.updated_at = now_ts();
         store.update_mcp_server(&updated).map_err(store_err)?;
-        for agent in removed_agents {
-            match write_with_resolver(store, &updated, &agent, WriteOp::Upsert, None, resolve)? {
-                WriteOutcome::Applied => outcome.applied.push(agent),
-                // No binding exists at this point, so a drift here would be
-                // a foreign collision the funnel already vetted; keep it
-                // visible rather than invent a second outcome lane.
-                WriteOutcome::PendingDrift(drift) => outcome.pending_drift.push(drift),
-            }
-        }
+        store.log_audit(
+            AuditDraft::new("mcp_rename")
+                .skill(updated.id.clone(), name.clone())
+                .detail(format!("from \"{}\"; agents: {}", current.name, outcome.applied.join(", ")))
+                .ok(),
+        );
         return Ok(outcome);
     }
 
@@ -829,6 +1000,21 @@ pub(crate) fn edit_mcp_server_internal(
             WriteOutcome::PendingDrift(drift) => outcome.pending_drift.push(drift),
         }
     }
+    store.log_audit(
+        AuditDraft::new("mcp_edit")
+            .skill(updated.id.clone(), updated.name.clone())
+            .detail(format!(
+                "applied: {}; pending: {}",
+                outcome.applied.join(", "),
+                outcome
+                    .pending_drift
+                    .iter()
+                    .map(|d| d.agent_key.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+            .ok(),
+    );
     Ok(outcome)
 }
 
@@ -892,7 +1078,9 @@ pub(crate) fn sync_mcp_to_agent_internal(
     resolve: AgentResolver,
 ) -> Result<WriteOutcome, AppError> {
     let record = load_record(store, id)?;
-    write_with_resolver(store, &record, agent_key, WriteOp::Upsert, approved_drift, resolve)
+    let outcome = write_with_resolver(store, &record, agent_key, WriteOp::Upsert, approved_drift, resolve)?;
+    audit_write(store, "mcp_sync", &record.id, &record.name, agent_key, &outcome);
+    Ok(outcome)
 }
 
 pub(crate) fn unsync_mcp_from_agent_internal(
@@ -914,7 +1102,29 @@ pub(crate) fn unsync_mcp_from_agent_internal(
             record.name
         )));
     }
-    write_with_resolver(store, &record, agent_key, WriteOp::Remove, approved_drift, resolve)
+    let outcome = write_with_resolver(store, &record, agent_key, WriteOp::Remove, approved_drift, resolve)?;
+    audit_write(store, "mcp_unsync", &record.id, &record.name, agent_key, &outcome);
+    Ok(outcome)
+}
+
+/// House style audits every mutation; a pending confirmation is part of the
+/// story (it says the write did NOT happen yet), so it is logged as such.
+fn audit_write(
+    store: &SkillStore,
+    op: &str,
+    id: &str,
+    name: &str,
+    agent_key: &str,
+    outcome: &WriteOutcome,
+) {
+    let draft = AuditDraft::new(op).skill(id.to_string(), name.to_string());
+    let draft = match outcome {
+        WriteOutcome::Applied => draft.detail(format!("agent '{agent_key}'")).ok(),
+        WriteOutcome::PendingDrift(_) => draft
+            .detail(format!("agent '{agent_key}'"))
+            .fail("pending drift/foreign confirmation"),
+    };
+    store.log_audit(draft);
 }
 
 /// Adopt a foreign agent entry: read its full definition (env values and
@@ -1148,12 +1358,29 @@ pub(crate) fn get_mcp_upgrade_plan_internal(
 /// Execute the upgrade for one definition. The command list is re-derived
 /// from the stored record — a client-side list could be stale or hostile
 /// (ADR-0006 §1's confirm-then-run-exactly-what-was-shown contract).
-pub(crate) fn apply_mcp_upgrade_internal(store: &SkillStore, id: &str) -> Result<String, AppError> {
+pub(crate) fn apply_mcp_upgrade_internal(
+    store: &SkillStore,
+    id: &str,
+    approved_commands: &[String],
+) -> Result<ApplyUpgradeOutcome, AppError> {
     let record = load_record(store, id)?;
     let name = record.name.clone();
-    // Re-derived from the live bindings, never from a client-side echo
-    // (ADR-0006 §1's confirm-then-run-exactly-what-was-shown contract).
+    // Re-derived from the live bindings, then bound to what the user
+    // confirmed: a cache dir or config that moved between dialog and
+    // confirm must re-ask, never run unseen commands.
     let commands = upgrade_command_union(store, &record, None, &resolve_agent_config)?;
+    let mut derived = commands.clone();
+    derived.sort();
+    let mut approved = approved_commands.to_vec();
+    approved.sort();
+    if derived != approved {
+        return Ok(ApplyUpgradeOutcome::PlanChanged {
+            plan: UpgradePlanDto {
+                commands,
+                latest_version: record.remote_version.clone(),
+            },
+        });
+    }
     let output = match mcp_upstream::run_commands(&commands) {
         Ok(output) => output,
         Err(err) => {
@@ -1196,10 +1423,12 @@ pub(crate) fn apply_mcp_upgrade_internal(store: &SkillStore, id: &str) -> Result
             .detail(format!("{check_note}; {probe_note}"))
             .ok(),
     );
-    Ok(format!(
-        "{output}\n\nversion check: {check_note}\n{liveness}: {probe_note}",
-        liveness = "probe"
-    ))
+    Ok(ApplyUpgradeOutcome::Ran {
+        output: format!(
+            "{output}\n\nversion check: {check_note}\n{liveness}: {probe_note}",
+            liveness = "probe"
+        ),
+    })
 }
 
 // ── v1 read-only inventory (ADR-0005, unchanged) ──
@@ -1365,10 +1594,14 @@ pub async fn get_mcp_upgrade_plan(
 #[tauri::command]
 pub async fn apply_mcp_upgrade(
     id: String,
+    approved_commands: Vec<String>,
     store: State<'_, Arc<SkillStore>>,
-) -> Result<String, AppError> {
+) -> Result<ApplyUpgradeOutcome, AppError> {
     let store = store.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || apply_mcp_upgrade_internal(&store, &id)).await?
+    tauri::async_runtime::spawn_blocking(move || {
+        apply_mcp_upgrade_internal(&store, &id, &approved_commands)
+    })
+    .await?
 }
 
 #[cfg(test)]
@@ -1802,6 +2035,78 @@ mod tests {
             plan.iter()
                 .any(|c| c.starts_with("npm i -g") && c.contains("@agentmemory/mcp@latest")),
             "global install upgrade missing: {plan:?}"
+        );
+    }
+
+    /// Regression guard for the two-phase rename bug: applied old-name
+    /// removals used to delete their binding rows, so a drift confirmation
+    /// interrupting mid-fleet made the retry lose the already-cleaned
+    /// agents — their config entries vanished and the ledger forgot them.
+    /// Gate-first rename writes NOTHING until every agent has answered.
+    #[test]
+    fn rename_with_one_drifted_agent_writes_nothing_then_renames_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&dir.path().join("test.db")).unwrap();
+        let a1 = dir.path().join("a1.json");
+        let a2 = dir.path().join("a2.json");
+        let entry = entry_json("old", "npx", &["-y", "@o/old"]);
+        std::fs::write(&a1, entry.to_string()).unwrap();
+        std::fs::write(&a2, entry.to_string()).unwrap();
+        let (a1c, a2c) = (a1.clone(), a2.clone());
+        let resolver: Box<dyn Fn(&str) -> Result<(PathBuf, &'static dyn McpWriter), AppError> + Send + Sync> =
+            Box::new(move |key: &str| {
+                let writer = writer_for_agent("opencode").unwrap();
+                match key {
+                    "a1" => Ok((a1c.clone(), writer)),
+                    "a2" => Ok((a2c.clone(), writer)),
+                    other => Err(AppError::invalid_input(format!("unknown {other}"))),
+                }
+            });
+
+        let rec = record("old", "npx", &["-y", "@o/old"]);
+        store.insert_mcp_server(&rec).unwrap();
+        sync_mcp_to_agent_internal(&store, &rec.id, "a1", None, &resolver).unwrap();
+        sync_mcp_to_agent_internal(&store, &rec.id, "a2", None, &resolver).unwrap();
+        // Hand-edit a2 behind the ledger's back.
+        std::fs::write(&a2, entry_json("old", "tampered", &["--x"]).to_string()).unwrap();
+
+        let dto = McpEntryDefDto {
+            name: "new".to_string(),
+            transport: "stdio".to_string(),
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "@o/old".to_string()],
+            url: None,
+            env: BTreeMap::new(),
+        };
+        let outcome =
+            edit_mcp_server_internal(&store, &rec.id, dto.clone(), json!({"kind": "none"}), None, &resolver)
+                .unwrap();
+        assert_eq!(outcome.pending_drift.len(), 1);
+        assert_eq!(outcome.pending_drift[0].agent_key, "a2");
+        assert!(outcome.applied.is_empty());
+        // Gate-first: the clean agent kept its old-name entry AND its
+        // binding row — the retry still sees the full fleet.
+        assert!(read(&a1).contains("\"old\""));
+        assert_eq!(store.get_mcp_bindings_for_server(&rec.id).unwrap().len(), 2);
+        assert_eq!(
+            store.get_mcp_server_by_id(&rec.id).unwrap().unwrap().name,
+            "old",
+            "rename must not commit while any agent is unanswered"
+        );
+
+        let token = outcome.pending_drift[0].token.clone();
+        let outcome = edit_mcp_server_internal(&store, &rec.id, dto, json!({"kind": "none"}), Some(&token), &resolver)
+            .unwrap();
+        assert!(outcome.pending_drift.is_empty());
+        assert_eq!(outcome.applied.len(), 2);
+        for path in [&a1, &a2] {
+            let text = read(path);
+            assert!(text.contains("\"new\"") && !text.contains("\"old\""), "{text}");
+        }
+        assert_eq!(store.get_mcp_bindings_for_server(&rec.id).unwrap().len(), 2);
+        assert_eq!(
+            store.get_mcp_server_by_id(&rec.id).unwrap().unwrap().name,
+            "new"
         );
     }
 

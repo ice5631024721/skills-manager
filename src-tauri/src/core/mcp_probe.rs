@@ -36,7 +36,7 @@ const REQUEST_ID: u64 = 1;
 
 /// MCP protocol version advertised to servers. Kept verbatim from the plan
 /// (Task 5); servers negotiate independently of this string.
-const PROTOCOL_VERSION: &str = "2025-03-3";
+const PROTOCOL_VERSION: &str = "2025-03-26";
 
 /// The initialize request, newline-delimited (the stdio transport framing).
 /// Pure so the framing itself is unit-testable; both probes derive their body
@@ -113,9 +113,9 @@ impl ChildGuard {
         self.child.as_mut()
     }
 
-    /// Take ownership out of the guard (caller has reaped the child itself).
-    /// Consumers that wait on the exit status (mcp_upstream::run_commands)
-    /// disarm the guard this way; today only the test path uses it.
+    /// Take ownership out of the guard (caller reaps the child itself).
+    /// Today only the guard's own unit test exercises it; it stays as the
+    /// hand-out seam for any future consumer that waits on exit status.
     #[allow(dead_code)]
     pub(crate) fn take(&mut self) -> Option<Child> {
         self.child.take()
@@ -364,8 +364,23 @@ fn extra_user_paths() -> Vec<String> {
             .filter(|p| p.is_dir())
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        bins.sort_unstable();
-        bins.reverse(); // newest version wins PATH precedence
+        // Newest first by NUMERIC version segments: a lexicographic reverse
+        // would rank v8.0.0 above v24.15.0 and put a stale node first.
+        let version_key = |p: &str| -> Vec<u64> {
+            std::path::Path::new(p)
+                .components()
+                .rev()
+                .nth(2) // …/node-versions/<v>/installation/bin
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .map(|v| {
+                    v.trim_start_matches('v')
+                        .split('.')
+                        .filter_map(|s| s.parse::<u64>().ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        bins.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
         out.extend(bins);
     }
     out
@@ -374,23 +389,24 @@ fn extra_user_paths() -> Vec<String> {
 /// PATH handed to probed stdio servers: login shell first, then the
 /// well-known user bins, then whatever the GUI process inherited.
 fn probe_path() -> String {
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<std::path::PathBuf> = Vec::new();
     if let Some(shell_path) = login_shell_path() {
-        parts.push(shell_path);
+        parts.extend(std::env::split_paths(&shell_path));
     }
-    parts.extend(extra_user_paths());
-    let base = std::env::var("PATH").unwrap_or_default();
-    if !base.is_empty() {
-        parts.push(base);
+    parts.extend(extra_user_paths().iter().map(std::path::PathBuf::from));
+    if let Ok(base) = std::env::var("PATH") {
+        parts.extend(std::env::split_paths(&base));
     }
+    // split/join_paths honour the platform separator (':' unix, ';' windows
+    // — drive-letter entries survive instead of being shredded on ':').
     let mut seen = std::collections::HashSet::new();
-    let deduped: Vec<String> = parts
-        .join(":")
-        .split(':')
-        .filter(|p| !p.is_empty() && seen.insert(p.to_string()))
-        .map(str::to_string)
+    let deduped: Vec<std::path::PathBuf> = parts
+        .into_iter()
+        .filter(|p| !p.as_os_str().is_empty() && seen.insert(p.clone()))
         .collect();
-    deduped.join(":")
+    std::env::join_paths(deduped)
+        .map(|joined| joined.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// reqwest errors can be long-winded; collapse them to what a probe badge
@@ -455,7 +471,7 @@ mod tests {
         assert_eq!(value["jsonrpc"], "2.0");
         assert_eq!(value["id"], 1);
         assert_eq!(value["method"], "initialize");
-        assert_eq!(value["params"]["protocolVersion"], "2025-03-3");
+        assert_eq!(value["params"]["protocolVersion"], "2025-03-26");
         assert_eq!(value["params"]["capabilities"], serde_json::json!({}));
         assert_eq!(value["params"]["clientInfo"]["name"], "skills-manager");
     }

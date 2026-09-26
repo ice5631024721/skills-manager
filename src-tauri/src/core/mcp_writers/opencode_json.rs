@@ -28,6 +28,10 @@ use super::{AgentWriteError, McpEntryDef, McpWriter};
 use crate::core::mcp_inventory::normalize_transport;
 
 /// Writer for the OpenCode agent key (`mcp_writers::writer_for_agent`).
+/// A minimal valid opencode.json with an empty managed section — the seed
+/// for a missing file and the scratch for render-normalization questions.
+pub const EMPTY_DOC: &str = "{\n  \"mcp\": {}\n}";
+
 pub struct OpenCodeWriter;
 
 fn unsafe_error(message: impl Into<String>) -> AgentWriteError {
@@ -299,6 +303,10 @@ impl McpWriter for OpenCodeWriter {
             url,
             env,
         }))
+    }
+
+    fn empty_doc(&self) -> &'static str {
+        EMPTY_DOC
     }
 }
 
