@@ -33,7 +33,9 @@ export function HelpDialog() {
           </div>
         </div>
 
-        <div className="max-h-[min(72vh,720px)] space-y-3 overflow-y-auto px-5 py-5">
+        {/* Cap divides by --app-scale (same compensation as ConfirmDialog):
+            the text-size setting zooms <html>, and zoom does not scale vh. */}
+        <div className="max-h-[calc(min(72vh,720px)/var(--app-scale))] space-y-3 overflow-y-auto px-5 py-5">
           {(["workflows", "presets", "install", "sync", "global", "projects", "backup", "settings"] as const).map((key, index) => {
             const Icon = GUIDE_ICONS[index];
             return (

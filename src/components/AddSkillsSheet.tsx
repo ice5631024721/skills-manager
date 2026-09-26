@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "../utils";
 import * as api from "../lib/tauri";
-import type { ManagedSkill, ProjectAgentTarget } from "../lib/tauri";
+import type { ManagedSkill, ProjectAgentTarget, SourceType } from "../lib/tauri";
 import { getErrorMessage } from "../lib/error";
 import {
   classifySkill,
@@ -29,7 +29,7 @@ import {
 import { AgentIcon } from "./AgentIcon";
 import { SkillPickerRow } from "./SkillPickerRow";
 
-const SOURCE_PRIORITY = ["local", "import", "git", "skillssh"];
+const SOURCE_PRIORITY: SourceType[] = ["local", "import", "git", "skillssh"];
 const VISIBLE_TARGET_ICON_LIMIT = 5;
 
 export interface GlobalSheetTarget {
@@ -167,7 +167,7 @@ function AddSkillsSheetBody({ onClose, target, managedSkills, onInstalled }: Pro
   }, [managedSkills]);
 
   const sourceLabel = useCallback(
-    (source: string) => {
+    (source: SourceType) => {
       if (SOURCE_PRIORITY.includes(source)) {
         return t(`mySkills.sourceFilter.${source}`);
       }

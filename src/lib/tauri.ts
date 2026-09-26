@@ -4,6 +4,21 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type ToolCategory = "coding" | "lobster";
 
+/** How far a managed skill sits from its upstream (mirrors the Rust
+ *  `update_status` column; every value the backend can persist). */
+export type UpdateStatus =
+  | "up_to_date"
+  | "update_available"
+  | "updating"
+  | "checking"
+  | "error"
+  | "source_missing"
+  | "local_only"
+  | "unknown";
+
+/** Where a skill came from (CONTEXT.md: **Source Type**). */
+export type SourceType = "git" | "skillssh" | "local" | "import";
+
 export interface ToolInfo {
   key: string;
   display_name: string;
@@ -21,14 +36,14 @@ export interface ManagedSkill {
   id: string;
   name: string;
   description: string | null;
-  source_type: string;
+  source_type: SourceType;
   source_ref: string | null;
   source_ref_resolved: string | null;
   source_subpath: string | null;
   source_branch: string | null;
   source_revision: string | null;
   remote_revision: string | null;
-  update_status: string;
+  update_status: UpdateStatus;
   last_checked_at: number | null;
   last_check_error: string | null;
   central_path: string;
@@ -359,7 +374,7 @@ export interface BatchPresetToggleResult {
   failed: string[];
 }
 
-/** 库维度开关: one call flips a whole group's preset membership. */
+/** Library-wide toggle: one call flips a whole group's preset membership. */
 export const batchSetSkillsPreset = (skillIds: string[], presetId: string, enabled: boolean) =>
   invoke<BatchPresetToggleResult>("batch_set_skills_preset", { skillIds, presetId, enabled });
 
@@ -373,7 +388,7 @@ export interface BatchTargetSyncResult {
   failed: BatchTargetFailure[];
 }
 
-/** 库维度同步: one call installs/uninstalls a whole group for one agent. */
+/** Library-wide sync: one call installs/uninstalls a whole group for one agent. */
 export const batchSetSkillTargets = (skillIds: string[], tool: string, enabled: boolean) =>
   invoke<BatchTargetSyncResult>("batch_set_skill_targets", { skillIds, tool, enabled });
 
