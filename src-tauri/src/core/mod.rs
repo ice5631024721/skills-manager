@@ -16,6 +16,7 @@ pub mod install_cancel;
 pub mod installer;
 pub mod log_sanitize;
 pub mod mcp_inventory;
+pub mod mcp_probe;
 pub mod mcp_store;
 pub mod mcp_writers;
 pub mod merge;
