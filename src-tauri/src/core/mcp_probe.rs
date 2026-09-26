@@ -168,17 +168,9 @@ pub fn probe_stdio(entry: &McpEntryDef, timeout: Duration) -> Result<ProbeInfo, 
     }
     // A GUI process inherits a minimal PATH, but stdio servers live in the
     // user's shell PATH (fnm shims, ~/.local/bin, cargo bins). Prepend the
-    // login-shell PATH so the probe spawns what the agent would spawn;
+    // best-effort user PATH so the probe spawns what the agent would spawn;
     // without it every shell-installed server probes as "not found".
-    if let Some(shell_path) = login_shell_path() {
-        let base = std::env::var("PATH").unwrap_or_default();
-        let joined = if base.is_empty() {
-            shell_path
-        } else {
-            format!("{shell_path}:{base}")
-        };
-        cmd.env("PATH", joined);
-    }
+    cmd.env("PATH", probe_path());
     for (key, value) in &entry.env {
         cmd.env(key, value);
     }
@@ -323,12 +315,13 @@ fn login_shell_path() -> Option<String> {
     static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
             let output = if cfg!(windows) {
                 std::process::Command::new("cmd")
                     .args(["/C", "echo %PATH%"])
                     .output()
             } else {
-                std::process::Command::new("sh")
+                std::process::Command::new(&shell)
                     .args(["-lc", "printf %s \"$PATH\""])
                     .output()
             };
@@ -339,6 +332,65 @@ fn login_shell_path() -> Option<String> {
                 .filter(|s| !s.is_empty())
         })
         .clone()
+}
+
+/// Directories a login shell still misses on typical setups: interactive-only
+/// rc files (homebrew), tool installs that never touch shell config at all
+/// (fnm's node versions are injected per-session by `fnm env`). Probing is a
+/// best-effort approximation of "the environment an agent would spawn with",
+/// so union the well-known user bins, newest fnm version first.
+fn extra_user_paths() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let Some(home) = dirs::home_dir() else {
+        return out;
+    };
+    let fixed = [
+        home.join(".local/bin"),
+        home.join(".cargo/bin"),
+        std::path::PathBuf::from("/opt/homebrew/bin"),
+        std::path::PathBuf::from("/opt/homebrew/sbin"),
+        home.join(".local/share/fnm/aliases/default/bin"),
+    ];
+    for dir in fixed {
+        if dir.is_dir() {
+            out.push(dir.to_string_lossy().to_string());
+        }
+    }
+    let versions = home.join(".local/share/fnm/node-versions");
+    if let Ok(entries) = std::fs::read_dir(&versions) {
+        let mut bins: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().join("installation/bin"))
+            .filter(|p| p.is_dir())
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        bins.sort_unstable();
+        bins.reverse(); // newest version wins PATH precedence
+        out.extend(bins);
+    }
+    out
+}
+
+/// PATH handed to probed stdio servers: login shell first, then the
+/// well-known user bins, then whatever the GUI process inherited.
+fn probe_path() -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(shell_path) = login_shell_path() {
+        parts.push(shell_path);
+    }
+    parts.extend(extra_user_paths());
+    let base = std::env::var("PATH").unwrap_or_default();
+    if !base.is_empty() {
+        parts.push(base);
+    }
+    let mut seen = std::collections::HashSet::new();
+    let deduped: Vec<String> = parts
+        .join(":")
+        .split(':')
+        .filter(|p| !p.is_empty() && seen.insert(p.to_string()))
+        .map(str::to_string)
+        .collect();
+    deduped.join(":")
 }
 
 /// reqwest errors can be long-winded; collapse them to what a probe badge
