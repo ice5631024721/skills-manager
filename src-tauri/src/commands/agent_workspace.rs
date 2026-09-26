@@ -240,6 +240,15 @@ fn import_agent_local_skill_to_center(
     let source_path = PathBuf::from(&skill.path);
     ensure_agent_skill_path(&source_path, &skills_root)?;
 
+    // Everything below writes into the central repo (adopt-overwrite of an
+    // existing central dir, fresh install, then the row + sync target). The
+    // repo lock is the discipline every other central writer follows — CLI
+    // installs, backup restore, GUI installs — and this path skipping it
+    // raced them. `sync_single_skill_to_tool` takes no lock of its own, so
+    // holding it across the whole mutation cannot self-deadlock.
+    let _lock = crate::core::repo_lock::RepoLock::acquire_foreground("import agent skill to center")
+        .map_err(AppError::db)?;
+
     let all_managed = store.get_all_skills().unwrap_or_default();
     let all_targets = store.get_all_targets().unwrap_or_default();
     if let Some(existing) = find_verified_center_match(&skill, &all_managed, &all_targets) {

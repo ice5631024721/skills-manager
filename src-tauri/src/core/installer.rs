@@ -4,6 +4,7 @@ use walkdir::WalkDir;
 
 use super::central_repo;
 use super::content_hash;
+use super::error::AppError;
 use super::skill_metadata::{self, sanitize_skill_name};
 use super::sync_engine;
 
@@ -157,11 +158,20 @@ pub fn install_skill_dir_to_destination(
     sync_engine::ensure_dst_not_inside_src(source, destination)?;
 
     if destination.exists() {
-        std::fs::remove_dir_all(destination)
-            .with_context(|| format!("Failed to remove existing {:?}", destination))?;
+        // Never remove-then-copy over a live install: a failed copy or a
+        // crash between the two would destroy the existing skill with
+        // nothing to fall back to. Stage the new tree beside the
+        // destination and swap it in atomically instead — the same
+        // discipline `apply_update_from_checkout` uses.
+        let staged = staged_path_for(&destination.to_string_lossy());
+        copy_skill_dir(source, &staged).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&staged);
+        })?;
+        swap_skill_directory(&staged, destination)
+            .with_context(|| format!("Failed to swap into {:?}", destination))?;
+    } else {
+        copy_skill_dir(source, destination)?;
     }
-
-    copy_skill_dir(source, destination)?;
 
     let hash = content_hash::hash_directory(destination)?;
 
@@ -171,6 +181,70 @@ pub fn install_skill_dir_to_destination(
         central_path: destination.to_path_buf(),
         content_hash: hash,
     })
+}
+
+/// Markers of the transient sibling directories an update swap creates in the
+/// central repo: `.<name>.staged-<uuid>` holds the new tree before it goes
+/// live, `.<name>.backup-<uuid>` holds the old one while it is being
+/// replaced. They are internal plumbing — `is_transient_entry` lets the file
+/// watcher swallow their create/delete echoes (see `file_watcher`).
+pub const STAGED_MARKER: &str = ".staged-";
+pub const BACKUP_MARKER: &str = ".backup-";
+
+/// Whether a directory-entry name is one of the swap transients produced by
+/// [`staged_path_for`] / [`swap_skill_directory`].
+pub fn is_transient_entry(name: &str) -> bool {
+    name.starts_with('.') && (name.contains(STAGED_MARKER) || name.contains(BACKUP_MARKER))
+}
+
+/// A unique, not-yet-existing sibling path to stage a new tree for
+/// `central_path` before it is swapped in.
+pub fn staged_path_for(central_path: &str) -> PathBuf {
+    let path = PathBuf::from(central_path);
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "skill".to_string());
+    path.with_file_name(format!(".{file_name}{STAGED_MARKER}{}", uuid::Uuid::new_v4()))
+}
+
+/// Atomically-as-possible directory replacement: the staged tree is renamed
+/// into place and the previous one removed only after the rename succeeded.
+/// A failed rename restores the previous directory, so the live path is
+/// never left missing.
+pub fn swap_skill_directory(staged_path: &Path, current_path: &Path) -> Result<(), AppError> {
+    let backup_path = current_path.with_file_name(format!(
+        ".{}{BACKUP_MARKER}{}",
+        current_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "skill".to_string()),
+        uuid::Uuid::new_v4()
+    ));
+
+    if current_path.exists() {
+        std::fs::rename(current_path, &backup_path)?;
+    }
+
+    if let Err(err) = std::fs::rename(staged_path, current_path) {
+        if backup_path.exists() {
+            let _ = std::fs::rename(&backup_path, current_path);
+        }
+        let _ = remove_path_if_exists(staged_path);
+        return Err(err.into());
+    }
+
+    remove_path_if_exists(&backup_path)?;
+    Ok(())
+}
+
+pub(crate) fn remove_path_if_exists(path: &Path) -> Result<(), AppError> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 /// Extract a ZIP archive into `dest`, skipping any entry whose path would
@@ -227,11 +301,13 @@ fn safe_extract(archive: &mut zip::ZipArchive<std::fs::File>, dest: &Path) -> Re
 fn unique_skill_dest(parent: &Path, sanitized_name: &str, source: &Path) -> Result<PathBuf> {
     let source_hash = content_hash::hash_directory(source)?;
 
-    for i in 1u32.. {
-        let candidate = if i == 1 {
+    // Every branch returns; a name is found for any number of collisions.
+    let mut attempt = 1u32;
+    loop {
+        let candidate = if attempt == 1 {
             parent.join(sanitized_name)
         } else {
-            parent.join(format!("{}-{}", sanitized_name, i))
+            parent.join(format!("{}-{}", sanitized_name, attempt))
         };
 
         if !candidate.exists() {
@@ -241,9 +317,9 @@ fn unique_skill_dest(parent: &Path, sanitized_name: &str, source: &Path) -> Resu
         if content_hash::hash_directory(&candidate).ok().as_deref() == Some(source_hash.as_str()) {
             return Ok(candidate);
         }
-    }
 
-    Ok(parent.join(sanitized_name))
+        attempt += 1;
+    }
 }
 
 fn copy_skill_dir(src: &Path, dst: &Path) -> Result<()> {
