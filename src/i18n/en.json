@@ -1167,7 +1167,6 @@
     "scanning": "Scanning…",
     "summary": "{{servers}} servers · {{agents}} agents",
     "agentsSection": "Supported agents",
-    "serversSection": "Detected servers",
     "loadFailed": "Scan failed: {{message}}",
     "agent": {
       "notInstalled": "Not detected",
@@ -1183,14 +1182,8 @@
     "envKeysOnly": "key names only",
     "configFiles": "{{count}} config files",
     "noEndpoint": "(no command or URL)",
-    "empty": {
-      "title": "No MCP servers found",
-      "body": "Neither OpenCode nor DeepSeek Harness has an MCP entry yet. Add a definition above, or configure it in the agent and rescan."
-    },
-    "libraryTitle": "Managed library",
     "libraryEmpty": "Nothing managed yet — add a definition, then sync it to your agents.",
     "libraryLoadFailed": "Could not load the managed library",
-    "managedChip": "managed",
     "addServer": "Add server",
     "editServer": "Edit server",
     "deleteServer": "Delete server",
@@ -1203,7 +1196,8 @@
     "dot": {
       "synced": "Synced",
       "drift": "Drifted",
-      "agentUnavailable": "Agent unavailable"
+      "agentUnavailable": "Agent unavailable",
+      "foreignHere": "Foreign entry here"
     },
     "probeNow": "Probe now",
     "probePassed": "Probe passed",
@@ -1234,7 +1228,7 @@
     "driftStopped": "{{name}} left the drifted agents untouched",
     "driftAborted": "Stopped confirming drift for {{name}}: the file kept changing under every retry",
     "takeover": "Take over",
-    "takeoverDone": "Took over {{name}} from {{agent}}",
+    "takeoverDone": "Took over {{name}}",
     "takeoverFailed": "Could not take over {{name}}",
     "fieldName": "Name",
     "fieldTransport": "Transport",
@@ -1273,6 +1267,28 @@
     "validationUrlRequired": "Enter a URL for this server",
     "validationEnvKeyRequired": "Every environment row needs a key",
     "validationSourceValueRequired": "Enter the package or repo URL for the chosen source",
-    "validationPasteEmpty": "Nothing to add — paste at least one server entry"
+    "validationPasteEmpty": "Nothing to add — paste at least one server entry",
+    "refreshFailed": "Refresh failed: {{message}}",
+    "takeoverPick": "Take over from which agent?",
+    "takeoverPickBody": "The agents' copies of {{name}} run different commands. Which one becomes the managed definition?",
+    "takeoverDiffers": "{{name}} taken over, but some agents' copies differ — click their dashed dots to review the overwrite",
+    "selectMode": "Select",
+    "cancelSelect": "Cancel selection",
+    "selectHint": "Click a card to select",
+    "selectedCount": "{{count}} selected",
+    "selectAll": "Select All",
+    "deselectAll": "Deselect All",
+    "moreActions": "More actions",
+    "batchTakeover": "Take over ({{count}})",
+    "batchSyncTo": "Sync to… ({{count}})",
+    "batchSyncToPick": "Sync to which agent?",
+    "batchSyncToBody": "Sync the {{count}} selected definitions to one agent.",
+    "batchSyncToDone": "Synced {{count}} definition(s) to {{agent}}",
+    "batchSyncToSkipped": "{{count}} syncs were never confirmed — the drifted agents were left untouched",
+    "syncedToAgentFailed": "Could not sync {{name}}",
+    "batchDelete": "Delete ({{count}})",
+    "batchDeleteConfirmBody": "Removes {{count}} definitions from the library and from every agent they are synced to.",
+    "batchDeleteDone": "Deleted {{count}} definitions",
+    "batchDeleteKept": "{{count}} definitions kept — the drifted agents were left untouched"
   }
 }

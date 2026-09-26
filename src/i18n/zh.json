@@ -1167,7 +1167,6 @@
     "scanning": "扫描中…",
     "summary": "共 {{servers}} 个 MCP · {{agents}} 个 agent",
     "agentsSection": "受支持的 agent",
-    "serversSection": "已发现的 MCP",
     "loadFailed": "扫描失败：{{message}}",
     "agent": {
       "notInstalled": "未检测到",
@@ -1183,14 +1182,8 @@
     "envKeysOnly": "仅显示键名",
     "configFiles": "{{count}} 个配置文件",
     "noEndpoint": "（无命令或 URL）",
-    "empty": {
-      "title": "未发现 MCP 配置",
-      "body": "OpenCode 与 DeepSeek Harness 的配置里都还没有 MCP 条目。可在上方添加定义，或在 agent 里配置后点「重新扫描」。"
-    },
-    "libraryTitle": "托管定义库",
     "libraryEmpty": "还没有托管条目——先添加定义，再同步到各 agent。",
     "libraryLoadFailed": "托管定义库加载失败",
-    "managedChip": "已托管",
     "addServer": "添加 MCP",
     "editServer": "编辑 MCP",
     "deleteServer": "删除 MCP",
@@ -1203,7 +1196,8 @@
     "dot": {
       "synced": "已同步",
       "drift": "有漂移",
-      "agentUnavailable": "agent 不可用"
+      "agentUnavailable": "agent 不可用",
+      "foreignHere": "此处有外来条目"
     },
     "probeNow": "探活",
     "probePassed": "探活通过",
@@ -1234,7 +1228,7 @@
     "driftStopped": "{{name}} 未完成，漂移的 agent 保持原样",
     "driftAborted": "{{name}} 的文件在每次重试后都在变化，已停止确认漂移",
     "takeover": "接管",
-    "takeoverDone": "已接管 {{agent}} 的 {{name}}",
+    "takeoverDone": "已接管 {{name}}",
     "takeoverFailed": "接管 {{name}} 失败",
     "fieldName": "名称",
     "fieldTransport": "传输方式",
@@ -1273,6 +1267,28 @@
     "validationUrlRequired": "该传输方式需要填写 URL",
     "validationEnvKeyRequired": "每行环境变量都需要键名",
     "validationSourceValueRequired": "请填写所选上游源的包名或仓库地址",
-    "validationPasteEmpty": "没有可添加的内容——请至少粘贴一个 MCP 条目"
+    "validationPasteEmpty": "没有可添加的内容——请至少粘贴一个 MCP 条目",
+    "refreshFailed": "刷新失败：{{message}}",
+    "takeoverPick": "从哪个 agent 接管？",
+    "takeoverPickBody": "{{name}} 在各 agent 里的命令不一致。用哪个作为托管定义？",
+    "takeoverDiffers": "{{name}} 已接管，但部分 agent 的副本与托管定义不一致——点击虚线圆点确认覆盖",
+    "selectMode": "多选",
+    "cancelSelect": "取消多选",
+    "selectHint": "点击卡片开始选择",
+    "selectedCount": "已选 {{count}} 个",
+    "selectAll": "全选",
+    "deselectAll": "取消全选",
+    "moreActions": "更多操作",
+    "batchTakeover": "批量接管（{{count}}）",
+    "batchSyncTo": "批量同步到…（{{count}}）",
+    "batchSyncToPick": "同步到哪个 agent？",
+    "batchSyncToBody": "将选中的 {{count}} 个托管定义同步到一个 agent。",
+    "batchSyncToDone": "已将 {{count}} 个定义同步到 {{agent}}",
+    "batchSyncToSkipped": "{{count}} 次同步未确认，漂移的 agent 保持原样",
+    "syncedToAgentFailed": "{{name}} 同步失败",
+    "batchDelete": "批量删除（{{count}}）",
+    "batchDeleteConfirmBody": "将从定义库删除 {{count}} 个定义，并从它们同步到的每个 agent 中移除。",
+    "batchDeleteDone": "已删除 {{count}} 个定义",
+    "batchDeleteKept": "{{count}} 个定义已保留，漂移的 agent 未被改动"
   }
 }

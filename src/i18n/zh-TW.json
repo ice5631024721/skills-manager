@@ -1167,7 +1167,6 @@
     "scanning": "掃描中…",
     "summary": "共 {{servers}} 個 MCP · {{agents}} 個 agent",
     "agentsSection": "受支援的 agent",
-    "serversSection": "已發現的 MCP",
     "loadFailed": "掃描失敗：{{message}}",
     "agent": {
       "notInstalled": "未偵測到",
@@ -1183,14 +1182,8 @@
     "envKeysOnly": "僅顯示鍵名",
     "configFiles": "{{count}} 個設定檔",
     "noEndpoint": "（無命令或 URL）",
-    "empty": {
-      "title": "未發現 MCP 設定",
-      "body": "OpenCode 與 DeepSeek Harness 的設定裡都還沒有 MCP 條目。可在上方新增定義，或在 agent 裡設定後點「重新掃描」。"
-    },
-    "libraryTitle": "託管定義庫",
     "libraryEmpty": "還沒有託管條目——先新增定義，再同步到各 agent。",
     "libraryLoadFailed": "託管定義庫載入失敗",
-    "managedChip": "已託管",
     "addServer": "新增 MCP",
     "editServer": "編輯 MCP",
     "deleteServer": "刪除 MCP",
@@ -1203,7 +1196,8 @@
     "dot": {
       "synced": "已同步",
       "drift": "有漂移",
-      "agentUnavailable": "agent 不可用"
+      "agentUnavailable": "agent 不可用",
+      "foreignHere": "此處有外來條目"
     },
     "probeNow": "探活",
     "probePassed": "探活通過",
@@ -1234,7 +1228,7 @@
     "driftStopped": "{{name}} 未完成，漂移的 agent 保持原樣",
     "driftAborted": "{{name}} 的檔案在每次重試後都在變化，已停止確認漂移",
     "takeover": "接管",
-    "takeoverDone": "已接管 {{agent}} 的 {{name}}",
+    "takeoverDone": "已接管 {{name}}",
     "takeoverFailed": "接管 {{name}} 失敗",
     "fieldName": "名稱",
     "fieldTransport": "傳輸方式",
@@ -1273,6 +1267,28 @@
     "validationUrlRequired": "該傳輸方式需要填寫 URL",
     "validationEnvKeyRequired": "每一行環境變數都需要鍵名",
     "validationSourceValueRequired": "請填寫所選上游源的包名或倉庫位址",
-    "validationPasteEmpty": "沒有可新增的內容——請至少貼上一個 MCP 條目"
+    "validationPasteEmpty": "沒有可新增的內容——請至少貼上一個 MCP 條目",
+    "refreshFailed": "重新整理失敗：{{message}}",
+    "takeoverPick": "從哪個 agent 接管？",
+    "takeoverPickBody": "{{name}} 在各 agent 裡的命令不一致。用哪個作為託管定義？",
+    "takeoverDiffers": "{{name}} 已接管，但部分 agent 的副本與託管定義不一致——點擊虛線圓點確認覆蓋",
+    "selectMode": "多選",
+    "cancelSelect": "取消多選",
+    "selectHint": "點擊卡片開始選擇",
+    "selectedCount": "已選 {{count}} 個",
+    "selectAll": "全選",
+    "deselectAll": "取消全選",
+    "moreActions": "更多操作",
+    "batchTakeover": "批次接管（{{count}}）",
+    "batchSyncTo": "批次同步到…（{{count}}）",
+    "batchSyncToPick": "同步到哪個 agent？",
+    "batchSyncToBody": "將選中的 {{count}} 個託管定義同步到一個 agent。",
+    "batchSyncToDone": "已將 {{count}} 個定義同步到 {{agent}}",
+    "batchSyncToSkipped": "{{count}} 次同步未確認，漂移的 agent 保持原樣",
+    "syncedToAgentFailed": "{{name}} 同步失敗",
+    "batchDelete": "批次刪除（{{count}}）",
+    "batchDeleteConfirmBody": "將從定義庫刪除 {{count}} 個定義，並從它們同步到的每個 agent 中移除。",
+    "batchDeleteDone": "已刪除 {{count}} 個定義",
+    "batchDeleteKept": "{{count}} 個定義已保留，漂移的 agent 未改動"
   }
 }
