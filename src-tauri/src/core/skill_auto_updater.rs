@@ -221,6 +221,19 @@ fn run_round_blocking(store: &SkillStore) -> Result<(), String> {
     log::info!(
         "skill auto-updater: round done — checked={checked} available={available} updated={updated} held_back={held_back} failed={failed}"
     );
+
+    // MCP upstream check joins the same round (ADR-0006 §1): registry pings
+    // only, never an apply — an upgrade rewrites global state and must be
+    // confirmed by the user. A failure here must not fail the skill round.
+    let mcp_outcomes = super::mcp_upstream::check_latest(store, proxy.as_deref());
+    let mcp_available = mcp_outcomes.iter().filter(|(_, o)| o.behind).count();
+    let mcp_failed = mcp_outcomes.iter().filter(|(_, o)| o.error.is_some()).count();
+    log::info!(
+        "skill auto-updater: mcp round — checked={} available={} failed={}",
+        mcp_outcomes.len(),
+        mcp_available,
+        mcp_failed
+    );
     Ok(())
 }
 
