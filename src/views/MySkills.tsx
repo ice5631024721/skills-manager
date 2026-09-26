@@ -203,12 +203,13 @@ export function MySkills() {
 
   // ── Parent/group management ──
   // Skill Sources derive from the backend (ADR-0004: source-only grouping —
-  // collections were removed after real-use evaluation). "flat" is the
-  // default and preserves the preset view exactly as before (ordered list +
-  // drag sorting); the grouped view is opt-in. Note viewedPreset is always
+  // collections were removed after real-use evaluation). "source" is the
+  // default (user decision 2026-09-26: the grouped view is how the library
+  // is meant to be read); "flat" preserves the preset view exactly as
+  // before (ordered list + drag sorting). Note viewedPreset is always
   // non-null in practice (falls back to the first preset), so grouping must
   // not be gated on it.
-  const [grouping, setGrouping] = useState<"flat" | "source">("flat");
+  const [grouping, setGrouping] = useState<"flat" | "source">("source");
   const [skillSources, setSkillSources] = useState<SkillSource[]>([]);
   // Collapse state is per-session only (design: component state, no persistence).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
