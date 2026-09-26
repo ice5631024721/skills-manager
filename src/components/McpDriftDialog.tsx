@@ -100,20 +100,20 @@ export function McpDriftDialog({ chain }: Props) {
       // Set-merge: an EditOutcome re-reports every already-clean agent on
       // each replay, and a stale token re-queues its own agent with a fresh one.
       const nextApplied = Array.from(new Set([...applied, ...landed]));
-      // Edit/delete replays re-report the FULL remaining pending set (they
-      // loop every binding), so the queue is REBUILT from the replay — the
-      // old concatenation duplicated agents there and inflated the step
-      // count until a replay hit an already-deleted record. Single-agent
-      // replays (sync/unsync/takeover, including per-card batch lanes) only
-      // ever answer for their own agent: the rest of the queue must be
-      // CARRIED, or waiting cards would be silently dropped on settle.
+      // Carry the rest of the queue, then merge the replay's answer,
+      // deduping by TOKEN (not agent): tokens are deterministic per
+      // (agent, name, ledger fp, revision), so an EditOutcome replay that
+      // re-reports a still-waiting agent produces the SAME token already
+      // queued — the Map refreshes it instead of duplicating the step (the
+      // original F1 bug) — while different servers sharing one agent_key
+      // (batch sync) or spanning servers (batch delete) keep distinct
+      // tokens and survive (the by-agent rebuild dropped them).
       const answered = pendingAgents(result);
-      const carry = isEditOutcome(result) ? [] : queue.slice(1);
-      const byAgent = new Map<string, PendingDrift>();
-      for (const pending of [...carry, ...answered]) {
-        byAgent.set(pending.agent_key, pending);
+      const byToken = new Map<string, PendingDrift>();
+      for (const pending of [...queue.slice(1), ...answered]) {
+        byToken.set(pending.token, pending);
       }
-      const next = Array.from(byAgent.values());
+      const next = Array.from(byToken.values());
       const round = rounds + 1;
       setRounds(round);
       setApplied(nextApplied);

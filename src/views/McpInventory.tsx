@@ -513,7 +513,7 @@ export function McpInventory() {
    *  then claimed in place — except copies that read back different, which
    *  keep their foreign-here dot and resolve through the overwrite chain. */
   const runTakeoverLoop = useCallback(
-    async (name: string, occurrences: McpServerOccurrence[]): Promise<boolean> => {
+    async (name: string, occurrences: McpServerOccurrence[]): Promise<string[]> => {
       setBusyTakeoverName(name);
       try {
         const failedAgents: string[] = [];
@@ -529,14 +529,9 @@ export function McpInventory() {
             );
           }
         }
-        // One aggregated toast per card, not one per failed agent: a wide
-        // batch must not storm the corner.
-        if (failedAgents.length === 0) toast.success(t("mcp.takeoverDone", { name }));
-        else
-          toast.error(t("mcp.takeoverFailed", { name }), {
-            description: failedAgents.join(" · "),
-          });
-        return failedAgents.length === 0;
+        // Toasting is the caller's job: single-card takeover reports per
+        // card, batch takeover aggregates the whole batch into one toast.
+        return failedAgents;
       } finally {
         setBusyTakeoverName(null);
         await load(false);
@@ -548,14 +543,21 @@ export function McpInventory() {
   const handleTakeoverCard = useCallback(
     (summary: McpServerSummary) => {
       if (summary.agents.length === 0) return;
-      void runTakeoverLoop(summary.name, summary.agents);
+      void runTakeoverLoop(summary.name, summary.agents).then((failed) => {
+        if (failed.length === 0) toast.success(t("mcp.takeoverDone", { name: summary.name }));
+        else
+          toast.error(t("mcp.takeoverFailed", { name: summary.name }), {
+            description: failed.join(" · "),
+          });
+      });
     },
-    [runTakeoverLoop],
+    [runTakeoverLoop, t],
   );
 
   const handleBatchTakeover = useCallback(async () => {
     setBatchBusy(true);
     let done = 0;
+    const failures: string[] = [];
     try {
       for (const card of selectedForeign) {
         const occurrences = card.summary.agents;
@@ -563,14 +565,23 @@ export function McpInventory() {
         // Divergent copies in a batch take the first occurrence as the
         // definition of record; the rest claim in place or keep their
         // foreign-here dot for a later overwrite.
-        if (await runTakeoverLoop(card.name, occurrences)) done += 1;
+        const failed = await runTakeoverLoop(card.name, occurrences);
+        if (failed.length === 0) done += 1;
+        else failures.push(...failed.map((f) => `${card.name} → ${f}`));
       }
     } finally {
       setBatchBusy(false);
     }
+    // One aggregate toast per batch, not per card: a wide selection must
+    // not storm the corner.
+    if (done > 0) toast.success(t("mcp.batchTakeoverDone", { count: done }));
+    if (failures.length > 0)
+      toast.error(t("mcp.batchTakeoverFailed", { count: failures.length }), {
+        description: failures.slice(0, 4).join(" · "),
+      });
     // Nothing landed? Keep the selection so the batch can be retried.
     if (done > 0) exitMultiSelect();
-  }, [selectedForeign, runTakeoverLoop, exitMultiSelect]);
+  }, [selectedForeign, runTakeoverLoop, exitMultiSelect, t]);
 
   const runBatchSyncTo = useCallback(
     async (agentKey: string) => {
@@ -715,8 +726,15 @@ export function McpInventory() {
         // and refuses to run anything the user did not see (plan_changed).
         const outcome = await api.applyMcpUpgrade(server.id, plan.commands);
         if (outcome.status === "plan_changed") {
+          const freshPlan = outcome.plan;
           toast.info(t("mcp.upgradePlanChanged", { name: server.name }));
-          setConfirmRequest({ kind: "upgrade", server, plan: outcome.plan });
+          // ConfirmDialog closes itself right after onConfirm resolves
+          // (`await onConfirm(); onClose()`), so setting the fresh request
+          // synchronously would be nulled by that onClose. Defer one tick so
+          // the re-confirm lands after the close (ADR-0006 §1).
+          setTimeout(() => {
+            setConfirmRequest({ kind: "upgrade", server, plan: freshPlan });
+          }, 0);
           return;
         }
         toast.success(t("mcp.upgradeDone", { name: server.name }), {

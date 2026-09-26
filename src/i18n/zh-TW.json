@@ -1174,7 +1174,11 @@
       "readFailed": "讀取失敗",
       "serverCount": "{{servers}} 個 MCP"
     },
-    "state": "原生開關：關",
+    "state": {
+      "registered": "已在設定中（該格式無原生開關）",
+      "enabled": "原生開關：開",
+      "disabled": "原生開關：關"
+    },
     "envKeysOnly": "僅顯示鍵名",
     "configFiles": "{{count}} 個設定檔",
     "noEndpoint": "（無命令或 URL）",
@@ -1285,6 +1289,8 @@
     "batchDeleteKept": "{{count}} 個定義已保留，漂移的 agent 未改動",
     "foreignOverwriteTitle": "覆蓋外來條目？",
     "foreignOverwriteBody": "{{agent}} 裡有一條手寫的 {{name}}，不是定義庫寫的。確認後將用託管定義取代它。",
-    "upgradePlanChanged": "{{name}} 的升級計畫在你開啟確認框後變了——請核對新的命令清單"
+    "upgradePlanChanged": "{{name}} 的升級計畫在你開啟確認框後變了——請核對新的命令清單",
+    "batchTakeoverDone": "{{count}} 個服務已接管",
+    "batchTakeoverFailed": "{{count}} 處接管失敗——詳見描述"
   }
 }

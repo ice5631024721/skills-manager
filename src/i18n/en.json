@@ -1174,7 +1174,11 @@
       "readFailed": "Read failed",
       "serverCount": "{{servers}} servers"
     },
-    "state": "agent-native switch: off",
+    "state": {
+      "registered": "present in config (this format has no native on/off flag)",
+      "enabled": "agent-native switch: on",
+      "disabled": "agent-native switch: off"
+    },
     "envKeysOnly": "key names only",
     "configFiles": "{{count}} config files",
     "noEndpoint": "(no command or URL)",
@@ -1285,6 +1289,8 @@
     "batchDeleteKept": "{{count}} definitions kept — the drifted agents were left untouched",
     "foreignOverwriteTitle": "Overwrite a foreign entry?",
     "foreignOverwriteBody": "{{agent}} has a hand-written entry named {{name}} that the library never wrote. Confirming replaces it with the managed definition.",
-    "upgradePlanChanged": "{{name}}: the upgrade plan changed since the dialog opened — review the fresh command list"
+    "upgradePlanChanged": "{{name}}: the upgrade plan changed since the dialog opened — review the fresh command list",
+    "batchTakeoverDone": "{{count}} server(s) taken over",
+    "batchTakeoverFailed": "{{count}} takeover failure(s) — details in the description"
   }
 }

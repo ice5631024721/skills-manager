@@ -1174,7 +1174,11 @@
       "readFailed": "读取失败",
       "serverCount": "{{servers}} 个 MCP"
     },
-    "state": "原生开关：关",
+    "state": {
+      "registered": "已在配置中（该格式无原生开关）",
+      "enabled": "原生开关：开",
+      "disabled": "原生开关：关"
+    },
     "envKeysOnly": "仅显示键名",
     "configFiles": "{{count}} 个配置文件",
     "noEndpoint": "（无命令或 URL）",
@@ -1285,6 +1289,8 @@
     "batchDeleteKept": "{{count}} 个定义已保留，漂移的 agent 未被改动",
     "foreignOverwriteTitle": "覆盖外来条目？",
     "foreignOverwriteBody": "{{agent}} 里有一条手写的 {{name}}，不是定义库写的。确认后将用托管定义替换它。",
-    "upgradePlanChanged": "{{name}} 的升级计划在你打开确认框后变了——请核对新的命令清单"
+    "upgradePlanChanged": "{{name}} 的升级计划在你打开确认框后变了——请核对新的命令清单",
+    "batchTakeoverDone": "{{count}} 个服务已接管",
+    "batchTakeoverFailed": "{{count}} 处接管失败——详见描述"
   }
 }
