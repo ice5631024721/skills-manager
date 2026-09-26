@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { X, AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -7,6 +7,9 @@ interface Props {
   title?: string;
   message: string;
   details?: string[];
+  /** Rich replacement for the `details` chips (e.g. verbatim mono command
+   *  lines) rendered in the same capped, scrollable band. */
+  detailsNode?: ReactNode;
   confirmLabel?: string;
   tone?: "danger" | "warning";
   onClose: () => void;
@@ -18,6 +21,7 @@ export function ConfirmDialog({
   title,
   message,
   details,
+  detailsNode,
   confirmLabel,
   tone = "danger",
   onClose,
@@ -67,7 +71,11 @@ export function ConfirmDialog({
         </div>
 
         <p className="text-[13px] text-tertiary mb-5">{message}</p>
-        {details && details.length > 0 ? (
+        {detailsNode ? (
+          <div className="mb-5 min-h-0 overflow-y-auto rounded-lg border border-border-subtle bg-bg-secondary p-2.5">
+            {detailsNode}
+          </div>
+        ) : details && details.length > 0 ? (
           <div className="mb-5 flex flex-wrap gap-2 overflow-y-auto min-h-0">
             {details.map((detail) => (
               <span

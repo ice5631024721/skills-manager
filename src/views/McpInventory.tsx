@@ -1,7 +1,8 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  ArrowDownToLine,
   ArrowUpCircle,
   Check,
   Globe,
@@ -18,6 +19,10 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { AgentIcon } from "../components/AgentIcon";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { McpAddDialog } from "../components/McpAddDialog";
+import { McpDriftDialog } from "../components/McpDriftDialog";
+import type { McpDriftChain } from "../components/McpDriftDialog";
 import { McpAgentDots } from "../components/McpAgentDots";
 import { cn } from "../utils";
 import { getErrorMessage } from "../lib/error";
@@ -27,6 +32,7 @@ import type {
   McpInventoryReport,
   McpServerDto,
   McpServerSummary,
+  UpgradePlan,
 } from "../lib/tauri";
 
 /** Transport badge palette — local processes vs network endpoints. */
@@ -48,11 +54,14 @@ function fileName(path: string): string {
 
 // ── Managed library (ADR-0006) ──
 
-/** Open/prefill intent for the add/edit dialog — Task 11 renders it. */
+/** Open/prefill intent for the add/edit dialog (Task 11). */
 type McpAddDialogState = { mode: "add" } | { mode: "edit"; server: McpServerDto };
 
-/** Confirmation the user requested; Task 12 renders upgrade/delete dialogs. */
-type McpConfirmRequest = { kind: "upgrade" | "delete"; server: McpServerDto };
+/** Confirmation the user requested; the upgrade plan is fetched up front so
+ *  the dialog can show the exact commands verbatim (ADR-0006 §1). */
+type McpConfirmRequest =
+  | { kind: "upgrade"; server: McpServerDto; plan: UpgradePlan }
+  | { kind: "delete"; server: McpServerDto };
 
 /** One-shot liveness verdict as a header glyph (CONTEXT.md: **Probe**). */
 function ProbeIndicator({ server }: { server: McpServerDto }) {
@@ -91,8 +100,11 @@ interface McpLibrarySectionProps {
   agents: McpAgentStatus[];
   openAddDialog: () => void;
   editServer: (server: McpServerDto) => void;
-  upgradeServer: (server: McpServerDto) => void;
+  /** Fetches the upgrade plan, then opens the verbatim-command confirm. */
+  upgradeServer: (server: McpServerDto) => Promise<void>;
   deleteServer: (server: McpServerDto) => void;
+  /** A sync/unsync write met drifted files: the drift dialog replays it. */
+  requestDriftChain: (chain: McpDriftChain) => void;
   /** Re-pull the library after a write/probe changed backend state. */
   onChanged: () => void;
 }
@@ -106,6 +118,7 @@ function ManagedLibrarySection({
   editServer,
   upgradeServer,
   deleteServer,
+  requestDriftChain,
   onChanged,
 }: McpLibrarySectionProps) {
   const { t } = useTranslation();
@@ -114,6 +127,7 @@ function ManagedLibrarySection({
     null,
   );
   const [busyProbe, setBusyProbe] = useState<string | null>(null);
+  const [busyUpgrade, setBusyUpgrade] = useState<string | null>(null);
 
   const agentName = useCallback(
     (agentKey: string) =>
@@ -121,25 +135,45 @@ function ManagedLibrarySection({
     [agents],
   );
 
+  const syncToast = useCallback(
+    (server: McpServerDto, agentKey: string, nextDesired: boolean) =>
+      toast.success(
+        t(nextDesired ? "mcp.syncedToAgent" : "mcp.unsyncedFromAgent", {
+          name: server.name,
+          agent: agentName(agentKey),
+        }),
+      ),
+    [agentName, t],
+  );
+
   const handleToggle = useCallback(
     async (server: McpServerDto, agentKey: string, nextDesired: boolean) => {
       setBusyToggle({ serverId: server.id, agentKey });
+      // One lane per (server, agent): the same call, token-optional, drives
+      // both the first attempt and every drift-approved replay.
+      const write = (approvedDrift?: string | null) =>
+        nextDesired
+          ? api.syncMcpToAgent(server.id, agentKey, approvedDrift)
+          : api.unsyncMcpFromAgent(server.id, agentKey, approvedDrift);
       try {
-        const outcome = nextDesired
-          ? await api.syncMcpToAgent(server.id, agentKey)
-          : await api.unsyncMcpFromAgent(server.id, agentKey);
+        const outcome = await write();
         if (outcome.status === "pending_drift") {
-          // Task 12 replaces this notice with the current-vs-planned diff
-          // dialog; nothing was written until the token comes back.
-          toast.info(t("mcp.driftPending", { agent: agentName(agentKey) }));
-        } else {
-          toast.success(
-            t(nextDesired ? "mcp.syncedToAgent" : "mcp.unsyncedFromAgent", {
-              name: server.name,
-              agent: agentName(agentKey),
-            }),
-          );
+          // The drifted file stays untouched until the current-vs-planned
+          // confirmation; cancelling replays nothing and just re-pulls.
+          requestDriftChain({
+            name: server.name,
+            queue: [outcome],
+            retry: write,
+            agentLabel: agentName,
+            onDone: ({ cancelled }) => {
+              if (cancelled === null) syncToast(server, agentKey, nextDesired);
+              else toast.info(t("mcp.driftStopped", { name: server.name }));
+              onChanged();
+            },
+          });
+          return;
         }
+        syncToast(server, agentKey, nextDesired);
         onChanged();
       } catch (err) {
         toast.error(getErrorMessage(err, t("common.error")));
@@ -148,7 +182,7 @@ function ManagedLibrarySection({
         setBusyToggle(null);
       }
     },
-    [agentName, onChanged, t],
+    [agentName, onChanged, requestDriftChain, syncToast, t],
   );
 
   const handleProbe = useCallback(
@@ -287,10 +321,18 @@ function ManagedLibrarySection({
                 type="button"
                 title={t("mcp.upgrade")}
                 aria-label={t("mcp.upgrade")}
-                onClick={() => upgradeServer(server)}
+                disabled={busyUpgrade === server.id}
+                onClick={() => {
+                  setBusyUpgrade(server.id);
+                  void upgradeServer(server).finally(() => setBusyUpgrade(null));
+                }}
                 className={cn(actionClass, "text-amber-600 dark:text-amber-400")}
               >
-                <ArrowUpCircle className="h-3.5 w-3.5" />
+                {busyUpgrade === server.id ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ArrowUpCircle className="h-3.5 w-3.5" />
+                )}
               </button>
             )}
             <button
@@ -338,10 +380,11 @@ export function McpInventory() {
   const [libraryServers, setLibraryServers] = useState<McpServerDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Tasks 11/12 render dialogs from these; until then they only track the
-  // open request (and keep one lane busy at a time).
+  // One lane busy at a time: add/edit, an upgrade/delete confirm, or a
+  // running drift-confirmation chain.
   const [addDialog, setAddDialog] = useState<McpAddDialogState | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<McpConfirmRequest | null>(null);
+  const [driftChain, setDriftChain] = useState<McpDriftChain | null>(null);
 
   const scan = useCallback(async () => {
     setLoading(true);
@@ -393,7 +436,25 @@ export function McpInventory() {
     })();
   }, [loading, error, refreshLibrary]);
 
-  const dialogsBusy = addDialog !== null || confirmRequest !== null;
+  const dialogsBusy = addDialog !== null || confirmRequest !== null || driftChain !== null;
+
+  const agentName = useCallback(
+    (agentKey: string) =>
+      report?.agents.find((agent) => agent.agent_key === agentKey)?.display_name ?? agentKey,
+    [report],
+  );
+
+  /** Mount a drift chain; the wrapper guarantees unmount on settle before
+   *  the caller's own completion side effects run. */
+  const requestDriftChain = useCallback((chain: McpDriftChain) => {
+    setDriftChain({
+      ...chain,
+      onDone: (result) => {
+        setDriftChain(null);
+        chain.onDone(result);
+      },
+    });
+  }, []);
 
   const openAddDialog = useCallback(() => {
     if (dialogsBusy) return;
@@ -408,22 +469,109 @@ export function McpInventory() {
     [dialogsBusy],
   );
 
-  /** Task 12: fetch getMcpUpgradePlan(server.id) and confirm before apply. */
+  /** Fetch the exact commands first (ADR-0006 §1: nothing runs before the
+   *  user has seen them verbatim), then open the confirm. */
   const upgradeServer = useCallback(
-    (server: McpServerDto) => {
+    async (server: McpServerDto) => {
       if (dialogsBusy) return;
-      setConfirmRequest({ kind: "upgrade", server });
+      try {
+        const plan = await api.getMcpUpgradePlan(server.id);
+        setConfirmRequest({ kind: "upgrade", server, plan });
+      } catch (err) {
+        toast.error(getErrorMessage(err, t("common.error")));
+      }
     },
-    [dialogsBusy],
+    [dialogsBusy, t],
   );
 
-  /** Task 12: confirm against every binding's agent file, drift-gated. */
+  /** Confirm against every binding's agent file; drift-gated. */
   const deleteServer = useCallback(
     (server: McpServerDto) => {
       if (dialogsBusy) return;
       setConfirmRequest({ kind: "delete", server });
     },
     [dialogsBusy],
+  );
+
+  const runUpgrade = useCallback(
+    async (server: McpServerDto) => {
+      try {
+        await api.applyMcpUpgrade(server.id);
+        toast.success(t("mcp.upgradeDone", { name: server.name }), {
+          description: t("mcp.upgradeReconnectHint"),
+        });
+      } catch (err) {
+        toast.error(getErrorMessage(err, t("common.error")));
+      } finally {
+        void refreshLibrary();
+      }
+    },
+    [refreshLibrary, t],
+  );
+
+  const runDelete = useCallback(
+    async (server: McpServerDto) => {
+      try {
+        const outcome = await api.deleteMcpServer(server.id);
+        if (outcome.pending_drift.length > 0) {
+          // Some agents' files drifted: they wait on the chain, and the
+          // definition row survives until the last one is cleared.
+          requestDriftChain({
+            name: server.name,
+            queue: outcome.pending_drift,
+            applied: outcome.applied,
+            retry: (token) => api.deleteMcpServer(server.id, token),
+            agentLabel: agentName,
+            onDone: ({ cancelled }) => {
+              if (cancelled === null) toast.success(t("mcp.deleteDone", { name: server.name }));
+              else toast.info(t("mcp.deleteKept", { name: server.name }));
+              void refreshLibrary();
+            },
+          });
+          return;
+        }
+        toast.success(t("mcp.deleteDone", { name: server.name }));
+        void refreshLibrary();
+      } catch (err) {
+        // Mirrors the skill removal loop: report, then re-pull so the UI
+        // shows whatever the refused call really left behind.
+        toast.error(getErrorMessage(err, t("common.error")));
+        void refreshLibrary();
+      }
+    },
+    [agentName, refreshLibrary, requestDriftChain, t],
+  );
+
+  // ── take over foreign entries (ADR-0006 §7) ──
+
+  const [busyTakeover, setBusyTakeover] = useState<string | null>(null);
+
+  /** "agent_key::name" set of every (agent, name) a binding already covers. */
+  const managedKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const server of libraryServers) {
+      for (const binding of server.bindings) keys.add(`${binding.agent_key}::${server.name}`);
+    }
+    return keys;
+  }, [libraryServers]);
+
+  const takeoverOccurrence = useCallback(
+    async (agentKey: string, agentDisplayName: string, name: string) => {
+      const key = `${agentKey}::${name}`;
+      setBusyTakeover(key);
+      try {
+        await api.takeoverMcpEntry(agentKey, name);
+        toast.success(t("mcp.takeoverDone", { name, agent: agentDisplayName }));
+        await refreshLibrary();
+      } catch (err) {
+        toast.error(t("mcp.takeoverFailed", { name }), {
+          description: getErrorMessage(err, t("common.error")),
+        });
+      } finally {
+        setBusyTakeover(null);
+      }
+    },
+    [refreshLibrary, t],
   );
 
   /** Mirrors a Skill Source group header: icon chip, name, count, path. */
@@ -600,22 +748,68 @@ export function McpInventory() {
             </span>
           </span>
           <div className="flex shrink-0 items-center gap-1.5">
-            {server.agents.map((occurrence, index) => (
-              <Fragment key={occurrence.agent_key}>
-                {index > 0 && <span className="text-faint">·</span>}
-                <span
-                  className="inline-flex items-center gap-1 text-[12px] text-muted"
-                  title={`${occurrence.agent_display_name} · ${states[index]} · ${occurrence.config_path}`}
-                >
-                  <AgentIcon
-                    agentKey={occurrence.agent_key}
-                    displayName={occurrence.agent_display_name}
-                    className="h-3.5 w-3.5"
-                  />
-                  {t("mcp.state.registered")}
-                </span>
-              </Fragment>
-            ))}
+            {server.agents.map((occurrence, index) => {
+              // Covered = some managed definition of this name is bound to
+              // this agent (a binding is an (agent, name) fact).
+              const covered = managedKeys.has(`${occurrence.agent_key}::${server.name}`);
+              const takeoverKey = `${occurrence.agent_key}::${server.name}`;
+              const takingOver = busyTakeover === takeoverKey;
+              return (
+                <Fragment key={occurrence.agent_key}>
+                  {index > 0 && <span className="text-faint">·</span>}
+                  {covered ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-hover px-1.5 text-[11px] text-tertiary"
+                      title={`${occurrence.agent_display_name} · ${t("mcp.managedChip")} · ${occurrence.config_path}`}
+                    >
+                      <AgentIcon
+                        agentKey={occurrence.agent_key}
+                        displayName={occurrence.agent_display_name}
+                        className="h-3.5 w-3.5"
+                      />
+                      {t("mcp.managedChip")}
+                    </span>
+                  ) : (
+                    <span
+                      className="inline-flex items-center gap-1 text-[12px] text-muted"
+                      title={`${occurrence.agent_display_name} · ${states[index]} · ${occurrence.config_path}`}
+                    >
+                      <AgentIcon
+                        agentKey={occurrence.agent_key}
+                        displayName={occurrence.agent_display_name}
+                        className="h-3.5 w-3.5"
+                      />
+                      {t("mcp.state.registered")}
+                      {/* Quiet ghost affordance: adopting mirrors the entry
+                          into the library without touching the file
+                          (ADR-0006 §7). The card itself stays as before. */}
+                      <button
+                        type="button"
+                        disabled={takingOver}
+                        aria-label={t("mcp.takeover")}
+                        title={t("mcp.takeover")}
+                        onClick={() =>
+                          void takeoverOccurrence(
+                            occurrence.agent_key,
+                            occurrence.agent_display_name,
+                            server.name,
+                          )
+                        }
+                        className={cn(
+                          "rounded-md p-0.5 text-faint outline-none transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50",
+                        )}
+                      >
+                        {takingOver ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <ArrowDownToLine className="h-3 w-3" />
+                        )}
+                      </button>
+                    </span>
+                  )}
+                </Fragment>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -679,6 +873,7 @@ export function McpInventory() {
             editServer={editServer}
             upgradeServer={upgradeServer}
             deleteServer={deleteServer}
+            requestDriftChain={requestDriftChain}
             onChanged={() => void refreshLibrary()}
           />
 
@@ -705,6 +900,70 @@ export function McpInventory() {
         <div className="flex flex-1 items-center justify-center pb-20">
           <Loader2 className="h-5 w-5 animate-spin text-muted" />
         </div>
+      )}
+
+      {addDialog && (
+        <McpAddDialog
+          open
+          server={addDialog.mode === "edit" ? addDialog.server : null}
+          onClose={() => setAddDialog(null)}
+          onChanged={() => void refreshLibrary()}
+          runDriftChain={requestDriftChain}
+          agentLabel={agentName}
+        />
+      )}
+
+      {driftChain && <McpDriftDialog chain={driftChain} />}
+
+      {confirmRequest?.kind === "upgrade" && (
+        <ConfirmDialog
+          open
+          tone="warning"
+          title={t("mcp.upgradeConfirmTitle")}
+          message={t("mcp.upgradeConfirmBody", { name: confirmRequest.server.name })}
+          confirmLabel={t("mcp.upgrade")}
+          detailsNode={
+            // The plan verbatim — these are exactly what confirm will run.
+            <div className="flex flex-col gap-1.5">
+              {confirmRequest.plan.commands.map((command, index) => (
+                <code
+                  key={`${index}-${command}`}
+                  className="block break-all rounded-md bg-background px-2 py-1 font-mono text-[12px] leading-4 text-secondary"
+                >
+                  {command}
+                </code>
+              ))}
+              {confirmRequest.plan.latest_version && (
+                <span className="text-[12px] text-muted">
+                  {t("mcp.remoteVersion", { version: confirmRequest.plan.latest_version })}
+                </span>
+              )}
+            </div>
+          }
+          onClose={() => setConfirmRequest(null)}
+          onConfirm={() => runUpgrade(confirmRequest.server)}
+        />
+      )}
+
+      {confirmRequest?.kind === "delete" && (
+        <ConfirmDialog
+          open
+          tone="danger"
+          title={t("mcp.deleteServer")}
+          message={t("mcp.deleteConfirmBody", { name: confirmRequest.server.name })}
+          details={
+            confirmRequest.server.bindings.length > 0
+              ? confirmRequest.server.bindings.map((binding) => {
+                  const path = report?.agents.find(
+                    (agent) => agent.agent_key === binding.agent_key,
+                  )?.config_path;
+                  return `${agentName(binding.agent_key)}${path ? ` · ${path}` : ""}`;
+                })
+              : [t("mcp.deleteNoBindings")]
+          }
+          onClose={() => setConfirmRequest(null)}
+          onConfirm={() => runDelete(confirmRequest.server)}
+        />
       )}
     </div>
   );
