@@ -47,7 +47,7 @@ pub fn resolve_conflict_unlocked(
     git_backup::ensure_no_interrupted_git_operation(skills_dir)?;
 
     // Protect the current state: flush the DB projection, commit anything
-    // dirty, then take the user-visible safety snapshot (§4 先打快照 tag).
+    // dirty, then take the user-visible safety snapshot (§4 snapshot tag first).
     sync_metadata::write_all_from_db_unlocked(store)?;
     if git_backup::has_uncommitted_changes(skills_dir)? {
         git_backup::commit_all_unlocked(skills_dir, "backup")?;
@@ -186,7 +186,7 @@ fn apply_use_remote(
 
 /// Keep the local version and add the theirs version as a new skill with a
 /// fresh id, its directory suffixed with the origin device name (§4; the
-/// design writes `name (来自 <设备名>)` — a language-neutral `name (device)`
+/// design writes `name (from <device name>)` — a language-neutral `name (device)`
 /// is used since backend strings are not localized).
 fn apply_keep_both(
     repo: &Repository,

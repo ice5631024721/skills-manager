@@ -329,7 +329,7 @@ async fn apply_preset_to_default_impl(
     result.and_then(scenario_service::refusals_to_error)
 }
 
-/// 库维度开关：one IPC call applies a preset enable/disable to a whole group
+/// Library-scope toggle: one IPC call applies a preset enable/disable to a whole group
 /// of skills. `set_preset_skills_internal` already loops under a single repo
 /// lock with one metadata write, so the group case costs one round trip.
 #[derive(Debug, Serialize)]

@@ -8,7 +8,7 @@ import { shortLabel } from "../lib/agentIcons";
 
 /**
  * Group-level counterpart of `SyncDots`: one dot per agent tool, aggregated
- * over every skill in the group (库维度). "all" installs/uninstalls the whole
+ * over every skill in the group (library-wide scope). "all" installs/uninstalls the whole
  * group for that agent; "partial" (some skills synced) reads as a ringed dot
  * and clicking it installs the rest.
  */

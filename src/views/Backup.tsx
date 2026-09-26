@@ -456,7 +456,7 @@ export function Backup() {
         return;
       }
       // One backend transaction: commit → merge → snapshot → push, retried
-      // internally when another device pushes concurrently (§9 并发收敛).
+      // internally when another device pushes concurrently (design §9 concurrency convergence).
       const outcome = await api.gitBackupSync(t("settings.gitCommitPlaceholder"));
       const merge = outcome.merge;
       if (merge && merge.engine === "object" && !merge.legacy_fallback) {
@@ -492,7 +492,7 @@ export function Backup() {
       setBackupErrorRaw(getErrorMessage(error, ""));
       const message = getErrorMessage(error, "");
       if (message.includes("pending on both devices")) {
-        // Object-merge block (§4 双侧声明): the fix is resolving the pending
+        // Object-merge block (design §4 declared-on-both-sides): the fix is resolving the pending
         // conflict on one device — reclone/recovery would be wrong advice.
         toast.error(t("backup.conflicts.blockedBothDevices"), { duration: 12000 });
       } else if (isRecoverableSetupError(error)) {
@@ -715,7 +715,7 @@ export function Backup() {
     return match ? `https://github.com/${match[1]}` : null;
   })();
   // Token revoked/expired on the GitHub side → offer an explicit reconnect
-  // instead of only a failure card (backup redesign Phase 2 待办).
+  // instead of only a failure card (backup redesign Phase 2 to-do).
   const authErrorNeedsReconnect =
     isGithubRemote
     && /authentication failed|401|403|invalid.{0,24}(credentials|token)|could not read username/i.test(

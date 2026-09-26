@@ -53,7 +53,7 @@ struct TouchInfo {
     author: String,
 }
 
-/// Object-merge pull (§5 流程). Caller holds the repo lock and has applied
+/// Object-merge pull (§5 flow). Caller holds the repo lock and has applied
 /// the device identity; this function performs P1/P2, fetch, merge and the
 /// atomic apply. Returns the merge summary.
 pub fn object_merge_pull_unlocked(store: &SkillStore, skills_dir: &Path) -> Result<MergeSummary> {
@@ -192,7 +192,7 @@ pub fn object_merge_pull_unlocked(store: &SkillStore, skills_dir: &Path) -> Resu
     validate_merged_tree(&repo, &merged_tree, &tolerated)
         .context("object merge aborted (zero changes)")?;
 
-    // §5 忽略文件注: paths the checkout would create must not be shadowed by
+    // §5 ignored-file note: paths the checkout would create must not be shadowed by
     // untracked/ignored files on disk — explicit error, never a silent FORCE.
     let blockers = blocking_workdir_paths(&repo, skills_dir, &ours_tree, &merged_tree)?;
     if !blockers.is_empty() {
@@ -255,7 +255,7 @@ pub fn object_merge_pull_unlocked(store: &SkillStore, skills_dir: &Path) -> Resu
     // §5 steps 7'–11: applying marker, branch CAS, checkout, promote.
     finish_apply(&repo, &branch, ours, merge_commit, &merged_tree, &attempt_id)?;
 
-    // §4 钉住: the local machine only advances the theirs pointer of
+    // §4 pinning: the local machine only advances the theirs pointer of
     // still-active pendings; freshly staged conflicts were just promoted to
     // the same theirs commit.
     for id in &plan.still_pending {
@@ -304,7 +304,7 @@ fn finish_apply(
         // Roll the ref back and restore the (possibly partially checked-out)
         // working tree. The applying marker is only cleared once the
         // rollback checkout succeeded — otherwise it stays so the startup
-        // recovery settles the working tree (§5 恢复协议).
+        // recovery settles the working tree (§5 recovery protocol).
         let _ = repo.reference(&branch_ref, old_head, true, "object merge rollback");
         let rolled_back = repo
             .find_commit(old_head)
@@ -721,7 +721,7 @@ fn pick_versioned(
     }
 }
 
-// ── checkout pre-check (§5 忽略文件注 / §11-6) ──
+// ── checkout pre-check (§5 ignored-file note / §11-6) ──
 
 /// Paths the target tree adds relative to `ours` that already exist on disk
 /// (necessarily untracked or ignored — tracked paths live in `ours`). A
@@ -746,7 +746,7 @@ fn blocking_workdir_paths(
     Ok(blockers)
 }
 
-// ── pending projection (§4 SQLite 投影) ──
+// ── pending projection (§4 SQLite projection) ──
 
 /// Rebuild the pending_conflicts table from HEAD's trailer state plus the
 /// conflict refs. Returns the number of active pendings.
@@ -801,7 +801,7 @@ pub fn rebuild_pending_projection(repo: &Repository, store: &SkillStore) -> Resu
 }
 
 /// Whether origin/&lt;branch&gt; changes any skill that is pending locally —
-/// the narrowed damping gate of the automatic sync round (§4 收窄阻尼):
+/// the narrowed damping gate of the automatic sync round (§4 narrowed damping):
 /// unrelated remote updates flow automatically, but while a touched skill
 /// awaits a decision the round applies deliberate backpressure. Errors
 /// reading the remote tree count as "touched" (pause; the manual sync
@@ -889,7 +889,7 @@ fn build_summary(
     }
 }
 
-// ── startup recovery (§5 启动恢复协议) ──
+// ── startup recovery (§5 startup recovery protocol) ──
 
 /// Best-effort crash recovery, run once at startup before background work.
 /// Never blocks startup: a busy lock or an error only logs.
@@ -978,7 +978,7 @@ fn replay_interrupted_apply(repo: &Repository, old_head: Oid, head: Oid) -> Resu
 /// (still exactly `expected_clean`, ignoring unrelated untracked files) is
 /// force-checked-out directly; anything else — user edits or debris from a
 /// partial checkout — is preserved first in a rescue commit + user-visible
-/// snapshot tag. Never silently overwrites (§5 恢复不吞用户数据).
+/// snapshot tag. Never silently overwrites (§5 recovery never swallows user data).
 fn settle_worktree_from(repo: &Repository, expected_clean: Oid, target: Oid) -> Result<()> {
     let expected_tree = repo.find_commit(expected_clean)?.tree()?;
     let target_commit = repo.find_commit(target)?;

@@ -1258,7 +1258,7 @@ fn gitignore_escape(path: &str) -> String {
     out
 }
 
-/// §3.6 后半: keep oversized skills out of the backup by default. A skill
+/// §3.6 second half: keep oversized skills out of the backup by default. A skill
 /// directory above `limit` that is NOT yet tracked by git gets its content
 /// dir and its metadata file added to a managed `.gitignore` section (the
 /// skill stays on disk and in the local DB). Already-tracked skills are
@@ -1862,7 +1862,7 @@ mod tests {
         );
     }
 
-    // ── oversized skill exclusion (§3.6 后半) ──
+    // ── oversized skill exclusion (§3.6 second half) ──
 
     #[test]
     fn oversized_untracked_skill_is_excluded_but_tracked_one_is_not() {

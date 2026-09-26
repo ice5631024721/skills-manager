@@ -214,13 +214,13 @@ pub fn promote_staging(repo: &Repository, attempt_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Startup recovery for pending refs (§4 启动恢复协议): make sure every id
+/// Startup recovery for pending refs (§4 startup recovery protocol): make sure every id
 /// declared active by HEAD's history has a durable conflict ref pointing at
 /// (or past) its **current** declaration — promoting from staging when
 /// possible, else rebuilding from the declaring merge commit's second parent
 /// (which also makes freshly-cloned devices able to resolve with the remote
 /// version). An existing ref that merely advanced beyond the declaration
-/// (仅推进对端指针) is kept; one left over from a superseded declaration
+/// (advance-theirs-pointer only) is kept; one left over from a superseded declaration
 /// (resolved, then re-declared while this device was offline) is rewritten —
 /// otherwise "use remote" would apply the pre-resolution version. Ghost
 /// staging refs are then removed.

@@ -775,8 +775,8 @@ export function Sidebar() {
               )}
             />
             {t("sidebar.settings")}
-            {/* A newer app version exists. Amber = "有更新" per the UI spec;
-                the dot only points at Settings, where the user decides. */}
+            {/* A newer app version exists. Amber = "update available" per the
+                UI spec; the dot only points at Settings, where the user decides. */}
             {appUpdate?.has_update && (
               <span
                 className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"

@@ -1,5 +1,5 @@
 //! Commands for the management-view parent structure: Skill Sources
-//! (auto-derived repo groups). ADR-0004 removed Collections — grouping is
+//! (auto-derived source groups). ADR-0004 removed Collections — grouping is
 //! source-only (CONTEXT.md).
 //!
 //! Design of record: `CONTEXT.md` plus `docs/adr/0001..0004` — grouping lives

@@ -12,7 +12,7 @@ interface Props {
 }
 
 /**
- * Edit a Skill Source's description (MySkills 来源视角). An empty input clears
+ * Edit a Skill Source's description (MySkills source view). An empty input clears
  * the user-written description, handing control back to the auto/GitHub one.
  */
 export function SourceDescriptionDialog({ open, source, onSubmit, onClose }: Props) {

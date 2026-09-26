@@ -33,7 +33,7 @@ pub(crate) fn sync_engine_pref(store: &SkillStore) {
     git2_engine::set_preference(git2_enabled, store.proxy_url());
 }
 
-/// Resolve the device name (§4.3 设备命名): the persisted setting, or a
+/// Resolve the device name (§4.3 device naming): the persisted setting, or a
 /// hostname-derived default that is persisted on first use so it stays stable
 /// across sessions.
 fn effective_device_name(store: &SkillStore) -> String {
@@ -308,7 +308,7 @@ pub async fn git_backup_set_remote(
     .await?
 }
 
-/// Disconnect the local machine from the backup remote (#260, §3.1 断开本机):
+/// Disconnect the local machine from the backup remote (#260, §3.1 disconnect this device):
 /// remove the git origin, clear the saved remote URL setting, and delete the
 /// machine's stored access credential. Remote repository data and the local
 /// repo are kept; other devices are unaffected.
@@ -423,7 +423,7 @@ pub struct SyncOutcome {
 }
 
 /// Full backup sync as one transaction under a single repo lock (merge-engine
-/// design §9 并发收敛): commit → fetch/merge → snapshot → push, retrying the
+/// design §9 concurrency convergence): commit → fetch/merge → snapshot → push, retrying the
 /// fetch/merge/push tail when another device pushes concurrently. Replaces
 /// the frontend-orchestrated commit/pull/push sequence, whose lock gaps let a
 /// benign race surface as a non-fast-forward "needs recovery" error.
@@ -542,7 +542,7 @@ pub async fn git_backup_pending_conflicts(
         .await?
 }
 
-/// Resolve one pending conflict (§4 解决动作): action is one of
+/// Resolve one pending conflict (§4 resolve actions): action is one of
 /// "keep_local" | "use_remote" | "keep_both". Returns the safety snapshot
 /// tag taken before the resolution.
 #[tauri::command]
@@ -669,7 +669,7 @@ pub async fn git_backup_restore_version(
     .await?
 }
 
-/// Effective device name (§4.3 设备命名): the saved setting, or a persisted
+/// Effective device name (§4.3 device naming): the saved setting, or a persisted
 /// hostname-derived default.
 #[tauri::command]
 pub async fn backup_device_name(store: State<'_, Arc<SkillStore>>) -> Result<String, AppError> {

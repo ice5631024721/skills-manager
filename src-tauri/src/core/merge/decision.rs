@@ -73,7 +73,7 @@ pub struct MergePlan {
 pub fn decide(input: &DecisionInput) -> Result<MergePlan> {
     let mut plan = MergePlan::default();
 
-    // ── skills: pinned pendings first (§4 钉住) ──
+    // ── skills: pinned pendings first (§4 pinning) ──
     let mut pinned_ids: BTreeSet<&String> = BTreeSet::new();
     for (id, side) in input.pinned {
         let snap = match side {
@@ -131,7 +131,7 @@ pub fn decide(input: &DecisionInput) -> Result<MergePlan> {
                 if skill_identical(o, t) {
                     plan.skills.insert(id.clone(), planned(o, false));
                 } else {
-                    // 双新增分叉 → true conflict, keep ours.
+                    // Both sides added, diverged → true conflict, keep ours.
                     plan.skills.insert(id.clone(), planned(o, false));
                     plan.new_conflicts.push(NewConflict {
                         skill_id: id.clone(),
@@ -144,7 +144,7 @@ pub fn decide(input: &DecisionInput) -> Result<MergePlan> {
                 if skill_identical(b, t) {
                     // our deletion propagates
                 } else {
-                    // 删 vs 改 → true conflict; ours (the deletion) is kept.
+                    // Delete vs modify → true conflict; ours (the deletion) is kept.
                     plan.new_conflicts.push(NewConflict {
                         skill_id: id.clone(),
                         theirs_path: Some(t.meta.path.clone()),
@@ -157,7 +157,7 @@ pub fn decide(input: &DecisionInput) -> Result<MergePlan> {
                     // their deletion propagates
                     plan.updated_from_theirs.push(id.clone());
                 } else {
-                    // 改 vs 删 → true conflict, keep ours.
+                    // Modify vs delete → true conflict, keep ours.
                     plan.skills.insert(id.clone(), planned(o, false));
                     plan.new_conflicts.push(NewConflict {
                         skill_id: id.clone(),
@@ -221,7 +221,7 @@ pub fn decide(input: &DecisionInput) -> Result<MergePlan> {
         plan.scenarios.contains_key(sid) && plan.skills.contains_key(skid)
     });
 
-    // ── metadata-namespace junk drop (构树输入自愈): legacy trees carry
+    // ── metadata-namespace junk drop (tree-build input self-healing): legacy trees carry
     // atomic-write leftovers (`x.json.tmp.<uuid>`) and OS noise inside the
     // metadata subdirectories — an old client committed them before disk
     // cleanup ran. The app only ever writes `.json` files there, so any
@@ -316,7 +316,7 @@ fn merge_components(b: &SkillObj, o: &SkillObj, t: &SkillObj) -> ComponentOutcom
 /// Whole-file object merge: three-way per key; both-changed-unequal (and
 /// delete-vs-modify) resolve by newest committer time of the last commit
 /// touching the path on each side, with the touching commit id as a
-/// deterministic tie-break (§3 新者胜).
+/// deterministic tie-break (§3 newest wins).
 fn merge_whole_files<K: Ord + Clone>(
     base: &BTreeMap<K, FileEntry>,
     ours: &BTreeMap<K, FileEntry>,
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(conflicted, vec!["del-vs-edit", "edit-vs-del"]);
     }
 
-    // ── component-level (§3 组件级) ──
+    // ── component-level (§3 component merge) ──
 
     #[test]
     fn content_edit_plus_rename_compose() {
@@ -729,7 +729,7 @@ mod tests {
         assert!(plan.memberships.is_empty());
     }
 
-    // ── path collisions (§3 碰撞) ──
+    // ── path collisions (§3 collisions) ──
 
     #[test]
     fn collision_base_holder_stays_migrant_moves() {

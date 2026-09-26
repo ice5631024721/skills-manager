@@ -1405,7 +1405,7 @@ impl SkillStore {
         Ok(rows)
     }
 
-    // ── Skill sources (来源分组) ──
+    // ── Skill sources (grouping by source) ──
     //
     // The grouping layer is deliberately additive: `SkillRecord` stays a
     // mirror of the legacy `skills` columns, and source-grouping state is

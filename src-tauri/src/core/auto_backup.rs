@@ -4,7 +4,7 @@
 //!
 //! With the object merge engine (merge-engine design §9 3d-γ) a round that
 //! finds the remote ahead also merges it and pushes, so two devices converge
-//! hands-free. The one deliberate exception (§4 收窄阻尼): while a remote
+//! hands-free. The one deliberate exception (§4 narrowed damping): while a remote
 //! change touches a skill that is pending a local conflict decision, the
 //! round backs off and waits for a manual sync — unrelated updates keep
 //! flowing. With the `merge_engine=system` escape hatch the old behavior
@@ -32,7 +32,7 @@ pub const SETTING_LAST_ERROR: &str = "backup_last_auto_error";
 const EVENT_COMPLETED: &str = "backup-auto-completed";
 const AUTO_COMMIT_MESSAGE: &str = "auto backup";
 
-/// Trailing debounce after the last central-repo change (§3.4 分钟级防抖).
+/// Trailing debounce after the last central-repo change (§3.4 minute-level debounce).
 const DEBOUNCE: Duration = Duration::from_secs(120);
 /// Scheduler wake cadence; also the retry latency after a busy repo lock.
 const POLL_INTERVAL: Duration = Duration::from_secs(15);
@@ -86,7 +86,7 @@ pub(crate) enum Outcome {
     /// engine this waits for a manual sync; with the object engine it is a
     /// transient state — the re-armed next round merges and pushes.
     RemoteAhead,
-    /// §4 收窄阻尼: the remote touches a skill with an unresolved local
+    /// §4 narrowed damping: the remote touches a skill with an unresolved local
     /// conflict — deliberate backpressure until a manual decision.
     PausedOnConflict,
     Failed(String),
@@ -264,7 +264,7 @@ pub(crate) fn run_round_blocking(store: &SkillStore) -> Outcome {
         if !merge::object_merge_enabled(store) {
             return Outcome::RemoteAhead;
         }
-        // §4 收窄阻尼: unrelated remote updates flow automatically; a remote
+        // §4 narrowed damping: unrelated remote updates flow automatically; a remote
         // change to a skill awaiting a local conflict decision pauses the
         // round (deliberate backpressure, cleared by resolving + syncing).
         match merge::remote_touches_pending(store, &skills_dir) {
@@ -313,7 +313,7 @@ pub(crate) fn run_round_blocking(store: &SkillStore) -> Outcome {
     }
 }
 
-/// Best-effort "退出前" save (§3.4): commit outstanding changes locally so
+/// Best-effort pre-quit save (§3.4): commit outstanding changes locally so
 /// nothing is lost between sessions. Never touches the network — the next
 /// startup round pushes — and never blocks quitting (fail-fast lock).
 pub fn commit_on_exit(store: &SkillStore) {
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn round_pauses_when_remote_touches_a_pending_conflict() {
-        // §4 收窄阻尼: a remote change to a skill that awaits a local
+        // §4 narrowed damping: a remote change to a skill that awaits a local
         // conflict decision pauses the automatic round; an unrelated remote
         // change keeps flowing.
         let env = test_env();

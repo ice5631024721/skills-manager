@@ -588,7 +588,7 @@ pub struct BatchTargetSyncResult {
     pub failed: Vec<BatchTargetFailure>,
 }
 
-/// 库维度同步：one IPC call installs/uninstalls a whole group of skills for
+/// Library-scope sync: one IPC call installs/uninstalls a whole group of skills for
 /// one agent. Runs every `(skill, agent)` write server-side so the frontend
 /// makes a single round trip and refreshes once — no per-skill cascades, and
 /// per-skill failures are reported instead of silently half-applied.

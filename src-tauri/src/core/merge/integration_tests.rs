@@ -217,7 +217,7 @@ fn seeded_pair(env: &Env) -> (Device, Device) {
     (a, b)
 }
 
-// ── compose + convergence (§2.1 / §10 收敛性) ──
+// ── compose + convergence (§2.1 / §10 convergence) ──
 
 #[test]
 fn content_edit_plus_rename_compose_and_both_directions_converge() {
@@ -480,7 +480,7 @@ fn clean_deletion_propagates_and_delete_vs_edit_conflicts() {
     assert_eq!(summary.new_conflicts, vec!["del-edit"]);
 }
 
-// ── ff guard (§4 ff 防护) ──
+// ── ff guard (§4 ff guard) ──
 
 #[test]
 fn ff_guard_blocks_when_remote_touches_pending_skill() {
@@ -527,7 +527,7 @@ fn ff_guard_blocks_when_remote_touches_pending_skill() {
     );
 }
 
-// ── R3 反例: pending placeholder derived from theirs trailers only ──
+// ── R3 counter-example: pending placeholder derived from theirs trailers only ──
 
 #[test]
 fn pending_placeholder_from_theirs_trailer_wins_path_collision() {
@@ -566,7 +566,7 @@ fn pending_placeholder_from_theirs_trailer_wins_path_collision() {
 
     // From B's perspective the declaration lives only in theirs history —
     // the trailer alone makes S1 the immovable placeholder (pinned to the
-    // declaring side's version); the migrant S2 yields (§3 / R3 反例).
+    // declaring side's version); the migrant S2 yields (§3 / R3 counter-example).
     let s1 = b.meta_of("skill-1").unwrap();
     let s2 = b.meta_of("skill-2").unwrap();
     assert_eq!(s1.path, "spot");
@@ -692,7 +692,7 @@ fn commit_never_picks_up_tmp_metadata_leftovers() {
         .exists());
 }
 
-// ── crash recovery (§5 启动恢复协议) ──
+// ── crash recovery (§5 startup recovery protocol) ──
 
 /// Builds a repo state crashed between branch-move (step 9) and checkout
 /// (step 10): HEAD points at a commit whose tree is not in the working
@@ -1025,7 +1025,7 @@ fn legacy_remote_without_protocol_falls_back_to_system_merge() {
     );
 }
 
-// ── ignored-file checkout blocker (§5 忽略文件注) ──
+// ── ignored-file checkout blocker (§5 ignored-file note) ──
 
 #[test]
 fn ignored_file_in_the_way_blocks_with_guidance() {

@@ -32,8 +32,8 @@ pub struct McpInventoryReport {
 }
 
 /// Per-agent scan outcome. `error` is set when the config file exists but
-/// cannot be read or parsed — the UI shows "读取失败 + 原因" for that agent
-/// instead of hiding it (ADR-0005 Q20).
+/// cannot be read or parsed — the UI shows a "read failed + reason" message
+/// for that agent instead of hiding it (ADR-0005 Q20).
 #[derive(Debug, Clone, Serialize)]
 pub struct McpAgentStatus {
     pub agent_key: String,
