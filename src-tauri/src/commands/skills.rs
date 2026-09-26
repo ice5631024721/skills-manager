@@ -3055,14 +3055,21 @@ fn skill_ssh_id(skill: &SkillRecord) -> Option<String> {
 }
 
 /// Return the list of individual skill directories to install from a resolved repo dir.
-/// If `skill_dir` is itself a valid skill, returns `[skill_dir]`.
-/// Otherwise recursively walks for skill dirs (e.g. `category/<skill>` layouts).
+/// A root that is itself a valid skill joins the list as one more candidate
+/// (single-skill repos then yield exactly `[root]`); otherwise the recursive
+/// walk supplies the nested ones (e.g. `category/<skill>` layouts).
+///
+/// The root used to SHORT-CIRCUIT the walk, which hid every nested skill of
+/// suite repos that also carry an umbrella SKILL.md at the root (gstack:
+/// root router skill + ~40 per-skill dirs) — preview and install could only
+/// ever see the umbrella. The preview's per-skill checkboxes are the right
+/// place to decide what lands, not this scan.
 /// Returns an empty Vec when nothing is found — callers must handle that.
 pub fn collect_git_skill_dirs(skill_dir: &Path) -> Vec<PathBuf> {
-    if is_valid_skill_dir(skill_dir) {
-        return vec![skill_dir.to_path_buf()];
-    }
     let mut dirs = scanner::collect_skill_dirs(skill_dir);
+    if is_valid_skill_dir(skill_dir) {
+        dirs.push(skill_dir.to_path_buf());
+    }
     dirs.sort();
     dirs
 }
@@ -3872,6 +3879,34 @@ mod tests {
         fs::write(root.join("SKILL.md"), "---\nname: x\n---").unwrap();
         let dirs = collect_git_skill_dirs(root);
         assert_eq!(dirs, vec![root.to_path_buf()]);
+    }
+
+    /// Suite repos carry an umbrella SKILL.md at the root AND per-skill dirs
+    /// (garrytan/gstack: root router + ~40 skills). The root must not
+    /// short-circuit the walk, or every nested skill becomes uninstallable
+    /// — the preview checkboxes, not the scan, decide what lands.
+    #[test]
+    fn collect_git_skill_dirs_lists_umbrella_root_alongside_nested_skills() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("SKILL.md"), "---\nname: gstack\n---").unwrap();
+        write_skill_at(root, "qa");
+        write_skill_at(root, "ship");
+        // A SKILL.md deeper inside a skill dir is fixture content, not an
+        // installable skill (the walker treats skill dirs as leaves).
+        write_skill_at(root, "qa/fixtures/sample");
+        fs::create_dir_all(root.join("bin")).unwrap();
+
+        let dirs = collect_git_skill_dirs(root);
+        let keys: Vec<String> = dirs.iter().map(|d| skill_rel_key(root, d)).collect();
+        assert!(dirs.contains(&root.to_path_buf()), "umbrella root must be a candidate");
+        assert!(keys.contains(&"qa".to_string()));
+        assert!(keys.contains(&"ship".to_string()));
+        assert!(
+            !keys.iter().any(|k| k.contains("fixtures")),
+            "fixture SKILL.md must not leak: {keys:?}"
+        );
+        assert_eq!(dirs.len(), 3);
     }
 
     #[test]
