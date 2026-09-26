@@ -1003,8 +1003,19 @@ pub fn run() {
             commands::tools::reset_custom_tool_project_path,
             commands::tools::add_custom_tool,
             commands::tools::remove_custom_tool,
-            // MCP inventory (read-only, ADR-0005)
+            // MCP inventory (read-only, ADR-0005) + v2 library management (ADR-0006)
             commands::mcp::get_mcp_inventory,
+            commands::mcp::get_mcp_library,
+            commands::mcp::add_mcp_server,
+            commands::mcp::edit_mcp_server,
+            commands::mcp::delete_mcp_server,
+            commands::mcp::sync_mcp_to_agent,
+            commands::mcp::unsync_mcp_from_agent,
+            commands::mcp::takeover_mcp_entry,
+            commands::mcp::probe_mcp_server,
+            commands::mcp::check_mcp_updates,
+            commands::mcp::get_mcp_upgrade_plan,
+            commands::mcp::apply_mcp_upgrade,
             // Skills
             commands::skills::get_managed_skills,
             commands::skills::get_skills_for_preset,

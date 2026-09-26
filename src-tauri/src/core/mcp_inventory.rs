@@ -155,6 +155,18 @@ fn resolve_config_path(spec: &McpAgentSpec) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(spec.config_relative))
 }
 
+/// Resolve the on-disk config path for an agent key (the same keys
+/// `mcp_writers::writer_for_agent` accepts). The write path (Task 7) needs
+/// the path before any file exists; living here keeps scanner and writers on
+/// one source of truth for where each agent's MCP config lives.
+/// `None` marks an unsupported key so callers can fail loudly.
+pub(crate) fn agent_config_path(agent_key: &str) -> Option<PathBuf> {
+    MCP_AGENTS
+        .iter()
+        .find(|spec| spec.key == agent_key)
+        .map(resolve_config_path)
+}
+
 fn agent_installed(spec: &McpAgentSpec) -> bool {
     candidate_paths(spec.detect_dir).iter().any(|path| path.exists())
 }
