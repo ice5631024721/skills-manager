@@ -384,17 +384,28 @@ pub(crate) fn write_entry_to_agent_at(
 
     // Foreign name collision (ADR-0005 §7): an entry we did not write.
     // Equal-to-planned is safe to adopt (the write changes no bytes of
-    // meaning); anything else is refused with a takeover hint.
+    // meaning). Otherwise this is a confirmation, not a dead end: answer
+    // with a PendingDrift carrying the current-vs-planned text, exactly
+    // like ledger drift — refusing outright created a "take it over
+    // first" loop when the takeover itself is the thing blocked by the
+    // managed-name guard. The "foreign" sentinel in the token keeps it
+    // bound to (agent, name, definition) without a binding row.
     if binding.is_none() {
         if let Some((_, current_fp)) = &current {
             let planned_fp = current_entry_and_fingerprint(writer, &planned_text, &record.name)
                 .map(|(_, fp)| fp);
             let owns_it = matches!(&planned_fp, Some(fp) if fp == current_fp);
             if !owns_it {
-                return Err(AppError::invalid_input(format!(
-                    "agent '{agent_key}' already configures \"{}\" differently; take it over first or remove it there",
-                    record.name
-                )));
+                let token =
+                    drift_token(agent_key, &record.name, "foreign", record.updated_at);
+                if approved_drift != Some(token.as_str()) {
+                    return Ok(WriteOutcome::PendingDrift(PendingDriftDto {
+                        agent_key: agent_key.to_string(),
+                        token,
+                        current_text: text,
+                        planned_text,
+                    }));
+                }
             }
         }
     }
@@ -642,7 +653,7 @@ pub(crate) fn add_mcp_server_internal(
         match write_with_resolver(store, &record, agent, WriteOp::Upsert, None, resolve) {
             Ok(WriteOutcome::Applied) => {}
             Ok(WriteOutcome::PendingDrift(drift)) => failures.push(format!(
-                "{}: refused, an unmanaged same-name entry needs takeover",
+                "{}: a foreign same-name entry is there — sync it again to review the overwrite",
                 drift.agent_key
             )),
             Err(err) => failures.push(format!("{agent}: {}", err.message)),
@@ -873,6 +884,11 @@ pub(crate) fn unsync_mcp_from_agent_internal(
 /// all), store it as a managed definition with an inferred upstream source,
 /// and bind it at the CURRENT fingerprint — takeover never rewrites the
 /// file, it mirrors reality into the ledger.
+///
+/// When the name is already managed (adopted from another agent), a second
+/// agent's copy is claimed in place if it reads back equivalent to the
+/// managed definition; a differing copy is the sync path's overwrite
+/// confirmation to resolve, not a dead-end error here.
 pub(crate) fn takeover_mcp_entry_internal(
     store: &SkillStore,
     agent_key: &str,
@@ -882,15 +898,6 @@ pub(crate) fn takeover_mcp_entry_internal(
     let (path, writer) = resolve(agent_key)?;
     let text = std::fs::read_to_string(&path)
         .map_err(|err| AppError::io(format!("read {} failed: {err}", path.display())))?;
-    if store
-        .get_mcp_server_by_name(server_name)
-        .map_err(store_err)?
-        .is_some()
-    {
-        return Err(AppError::invalid_input(format!(
-            "a managed MCP server named \"{server_name}\" already exists; takeover would collide"
-        )));
-    }
     let entry = writer
         .read_entry(&text, server_name)
         .map_err(writer_err)?
@@ -899,6 +906,54 @@ pub(crate) fn takeover_mcp_entry_internal(
                 "no MCP entry \"{server_name}\" in agent '{agent_key}' config"
             ))
         })?;
+
+    if let Some(existing) = store
+        .get_mcp_server_by_name(server_name)
+        .map_err(store_err)?
+    {
+        if store
+            .get_mcp_bindings_for_server(&existing.id)
+            .map_err(store_err)?
+            .iter()
+            .any(|b| b.agent_key == agent_key)
+        {
+            return Err(AppError::invalid_input(format!(
+                "\"{server_name}\" is already managed in agent '{agent_key}'"
+            )));
+        }
+        // Equivalent means: upserting the managed definition over this file
+        // would read back exactly what is there now — claiming it changes no
+        // bytes of meaning. Transport normalization (streamable-http→http in
+        // opencode) is accounted for by comparing read-back fingerprints.
+        let current_fp = entry_fingerprint(&entry);
+        let planned = writer
+            .upsert(&text, &entry_from_record(&existing))
+            .map_err(writer_err)?;
+        let equivalent = current_entry_and_fingerprint(writer, &planned, server_name)
+            .is_some_and(|(_, fp)| fp == current_fp);
+        if !equivalent {
+            return Err(AppError::invalid_input(format!(
+                "\"{server_name}\" in agent '{agent_key}' differs from the managed definition; \
+                 sync it to overwrite after review, or edit the definition to match"
+            )));
+        }
+        store
+            .upsert_mcp_binding(&McpBindingRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                server_id: existing.id.clone(),
+                agent_key: agent_key.to_string(),
+                fingerprint: current_fp,
+                written_at: now_ts(),
+            })
+            .map_err(store_err)?;
+        store.log_audit(
+            AuditDraft::new("mcp_takeover")
+                .skill(existing.id.clone(), server_name.to_string())
+                .detail(format!("claimed in place from agent '{agent_key}'"))
+                .ok(),
+        );
+        return Ok(existing.id);
+    }
 
     let source = serde_json::to_value(mcp_upstream::infer_source(
         entry.command.as_deref(),
@@ -1508,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_over_foreign_same_name_is_refused() {
+    fn sync_over_foreign_same_name_asks_then_overwrites_with_token() {
         let h = harness();
         std::fs::write(
             &h.opencode,
@@ -1518,11 +1573,84 @@ mod tests {
         let rec = record("x", "npx", &["-y", "@o/x"]);
         h.store.insert_mcp_server(&rec).unwrap();
 
+        // ADR-0005 §7 is a confirmation now, not a dead end: the first call
+        // shows current-vs-planned instead of silently overwriting the user's
+        // hand-written entry.
+        let pending = match sync_mcp_to_agent_internal(&h.store, &rec.id, "opencode", None, &h.resolver)
+            .unwrap()
+        {
+            WriteOutcome::PendingDrift(drift) => drift,
+            other => panic!("foreign collision must ask, got {other:?}"),
+        };
+        assert_eq!(
+            pending.token,
+            drift_token("opencode", "x", "foreign", rec.updated_at)
+        );
+        assert!(pending.current_text.contains("/foreign/x"));
+        assert!(pending.planned_text.contains("npx"));
+        assert_eq!(
+            read(&h.opencode),
+            pending.current_text,
+            "asking must not touch the file"
+        );
+
+        // The token answers exactly this question: this agent, this definition.
+        sync_mcp_to_agent_internal(
+            &h.store,
+            &rec.id,
+            "opencode",
+            Some(&pending.token),
+            &h.resolver,
+        )
+        .unwrap();
+        let written = read(&h.opencode);
+        assert!(written.contains("npx") && !written.contains("/foreign/x"));
+        assert_eq!(h.store.get_mcp_bindings_for_server(&rec.id).unwrap().len(), 1);
+    }
+
+    /// The card-level takeover loop takes over one agent then claims the
+    /// others in place — a second agent whose copy reads back equivalent
+    /// joins the same definition without any file rewrite.
+    #[test]
+    fn takeover_claims_an_equivalent_copy_in_a_second_agent_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&dir.path().join("test.db")).unwrap();
+        let a1 = dir.path().join("a1.json");
+        let a2 = dir.path().join("a2.json");
+        let a3 = dir.path().join("a3.json");
+        let entry = entry_json("gem", "npx", &["-y", "@mcp/gem"]);
+        std::fs::write(&a1, entry.to_string()).unwrap();
+        std::fs::write(&a2, entry.to_string()).unwrap();
+        std::fs::write(
+            &a3,
+            entry_json("gem", "/other/gem", &["--x"]).to_string(),
+        )
+        .unwrap();
+        let (a1c, a2c, a3c) = (a1.clone(), a2.clone(), a3.clone());
+        let resolver: Box<dyn Fn(&str) -> Result<(PathBuf, &'static dyn McpWriter), AppError> + Send + Sync> =
+            Box::new(move |key: &str| {
+            let writer = writer_for_agent("opencode").unwrap();
+            match key {
+                "a1" => Ok((a1c.clone(), writer)),
+                "a2" => Ok((a2c.clone(), writer)),
+                "a3" => Ok((a3c.clone(), writer)),
+                other => Err(AppError::invalid_input(format!("unknown {other}"))),
+            }
+        });
+
+        let id = takeover_mcp_entry_internal(&store, "a1", "gem", &resolver).unwrap();
+        let id2 = takeover_mcp_entry_internal(&store, "a2", "gem", &resolver).unwrap();
+        assert_eq!(id, id2, "the equivalent copy joins the same definition");
+        assert_eq!(store.get_all_mcp_servers().unwrap().len(), 1);
+        assert_eq!(store.get_mcp_bindings_for_server(&id).unwrap().len(), 2);
+        assert_eq!(read(&a2), entry.to_string(), "claiming never rewrites");
+
+        // A3's copy differs: claiming would silently pick a definition, so
+        // it defers to the sync path's overwrite confirmation.
         let err =
-            sync_mcp_to_agent_internal(&h.store, &rec.id, "opencode", None, &h.resolver)
-                .unwrap_err();
-        assert_eq!(err.kind, crate::core::error::ErrorKind::InvalidInput);
-        assert!(err.message.contains("take it over"), "got: {}", err.message);
+            takeover_mcp_entry_internal(&store, "a3", "gem", &resolver).unwrap_err();
+        assert!(err.message.contains("differs"), "got: {}", err.message);
+        assert_eq!(store.get_mcp_bindings_for_server(&id).unwrap().len(), 2);
     }
 
     /// A YAML single-quoted scalar passes raw newlines through, so a value
