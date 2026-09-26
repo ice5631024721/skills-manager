@@ -18,6 +18,7 @@ pub mod log_sanitize;
 pub mod mcp_inventory;
 pub mod mcp_probe;
 pub mod mcp_store;
+pub mod mcp_upstream;
 pub mod mcp_writers;
 pub mod merge;
 pub mod migrations;
