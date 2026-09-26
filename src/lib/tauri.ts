@@ -984,3 +984,160 @@ export interface McpInventoryReport {
 }
 
 export const getMcpInventory = () => invoke<McpInventoryReport>("get_mcp_inventory");
+
+// ── MCP Library (read/write, ADR-0006) ──
+
+/** Liveness probe verdict (CONTEXT.md: **Probe**); "pending" is the initial
+ *  state before the first probe ever ran. */
+export type ProbeState = "ok" | "fail" | "pending";
+
+/** Upstream source tag (Rust `mcp_upstream::McpSource`, externally tagged
+ *  with `kind`; variant names are snake_case — no camelCase rename). */
+export type McpSource =
+  | { kind: "none" }
+  | { kind: "npm_global"; package: string }
+  | { kind: "npx"; package: string }
+  | { kind: "pypi_uvx"; package: string }
+  | { kind: "git"; repo_url: string; clone_path: string };
+
+/** A definition as sent to add/edit (Rust `McpEntryDefDto`; every optional
+ *  field carries `#[serde(default)]`, so omissions are accepted). */
+export interface McpEntryDef {
+  name: string;
+  /** "stdio" | "http" | "streamable-http" */
+  transport: string;
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  /** Key → value; values are masked in list UIs, full only inside dialogs. */
+  env?: Record<string, string>;
+}
+
+/** One binding row with a LIVE drift verdict for its agent file. */
+export interface McpBindingDto {
+  agent_key: string;
+  fingerprint: string;
+  drift: boolean;
+  /** Why the live entry differs from the ledger (file gone, hand-edited…). */
+  drift_reason: string | null;
+}
+
+/** A Managed library definition plus its deployment ledger: the Rust
+ *  `McpServerDto` flattens `McpServerRecord`, so every column sits next to
+ *  `bindings` on the wire (all snake_case, mirroring the other DTOs). */
+export interface McpServerDto {
+  id: string;
+  name: string;
+  transport: string;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env: Record<string, string>;
+  source: McpSource;
+  /** "unknown" | "up_to_date" | "update_available" | "error" — same
+   *  vocabulary as skills. */
+  update_status: UpdateStatus;
+  remote_version: string | null;
+  last_checked_at: number | null;
+  last_check_error: string | null;
+  probe_status: ProbeState;
+  probe_message: string | null;
+  probe_checked_at: number | null;
+  created_at: number;
+  updated_at: number;
+  bindings: McpBindingDto[];
+}
+
+export interface McpLibraryReport {
+  servers: McpServerDto[];
+  /** Same scan the inventory shows, so both sections agree on the agents. */
+  agents: McpAgentStatus[];
+}
+
+/** What a write refused to do until the user confirms: the file's current
+ *  text vs the text this operation would install. */
+export interface PendingDrift {
+  agent_key: string;
+  /** Replay token bound to (agent, name, ledger fingerprint, revision). */
+  token: string;
+  current_text: string;
+  planned_text: string;
+}
+
+/** Result of a single (server, agent) write. Rust enum internally tagged
+ *  with `status`: "applied" | "pending_drift" (fields inline). */
+export type WriteOutcome = { status: "applied" } | ({ status: "pending_drift" } & PendingDrift);
+
+/** Result of a multi-agent operation (edit/delete): which agents took the
+ *  write, and which wait on a drift confirmation (re-call with the token). */
+export interface EditOutcome {
+  applied: string[];
+  pending_drift: PendingDrift[];
+}
+
+export interface UpgradePlan {
+  commands: string[];
+  latest_version: string | null;
+}
+
+export interface ProbeStateDto {
+  probe_status: ProbeState;
+  probe_message: string | null;
+}
+
+export const getMcpLibrary = () => invoke<McpLibraryReport>("get_mcp_library");
+
+/** Creates the definition and deploys it to `agents` in one step;
+ *  returns the new id. */
+export const addMcpServer = (entry: McpEntryDef, source: McpSource, agents: string[]) =>
+  invoke<string>("add_mcp_server", { entry, source, agents });
+
+/** `approvedDrift` replays a `PendingDrift` token after user confirmation. */
+export const editMcpServer = (
+  id: string,
+  entry: McpEntryDef,
+  source: McpSource,
+  approvedDrift?: string | null,
+) =>
+  invoke<EditOutcome>("edit_mcp_server", {
+    id,
+    entry,
+    source,
+    approvedDrift: approvedDrift ?? null,
+  });
+
+export const deleteMcpServer = (id: string, approvedDrift?: string | null) =>
+  invoke<EditOutcome>("delete_mcp_server", { id, approvedDrift: approvedDrift ?? null });
+
+/** Rust arg is `agent`; nextDesired=true writes the entry into that agent. */
+export const syncMcpToAgent = (id: string, agentKey: string, approvedDrift?: string | null) =>
+  invoke<WriteOutcome>("sync_mcp_to_agent", {
+    id,
+    agent: agentKey,
+    approvedDrift: approvedDrift ?? null,
+  });
+
+export const unsyncMcpFromAgent = (id: string, agentKey: string, approvedDrift?: string | null) =>
+  invoke<WriteOutcome>("unsync_mcp_from_agent", {
+    id,
+    agent: agentKey,
+    approvedDrift: approvedDrift ?? null,
+  });
+
+/** Adopt a foreign agent entry as a managed definition (file untouched);
+ *  returns the new library id. */
+export const takeoverMcpEntry = (agentKey: string, serverName: string) =>
+  invoke<string>("takeover_mcp_entry", { agentKey, serverName });
+
+export const probeMcpServer = (id: string) =>
+  invoke<ProbeStateDto>("probe_mcp_server", { id });
+
+/** Whole-library upstream check; returns how many definitions were examined. */
+export const checkMcpUpdates = (force?: boolean) =>
+  invoke<number>("check_mcp_updates", { force: force ?? false });
+
+export const getMcpUpgradePlan = (id: string) =>
+  invoke<UpgradePlan>("get_mcp_upgrade_plan", { id });
+
+/** Runs the server-side re-derived plan; returns the combined command output. */
+export const applyMcpUpgrade = (id: string) => invoke<string>("apply_mcp_upgrade", { id });
