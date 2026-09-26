@@ -117,12 +117,13 @@ impl DshYamlWriter {
     /// rather than crashing the operation — it simply cannot be attributed.
     fn find_blocks(&self, file_text: &str) -> Vec<DshBlock> {
         let lines = line_ranges(file_text);
-        // CRLF files keep the '\r' inside line ranges; the bare-dash
-        // top-item form ("-\r") would otherwise escape detection and let a
-        // block swallow the following patch on Windows-authored files.
+        // CRLF files keep '\r' AND '\n' inside line ranges (line_ranges
+        // includes the newline); trim both or a bare-dash top item slices as
+        // "-\r\n" and escapes block-end detection, letting a block swallow
+        // the following patch on Windows-authored files.
         let item_of = |i: usize| {
             let (s, e) = lines[i];
-            file_text[s..e].trim_end_matches('\r')
+            file_text[s..e].trim_end_matches(['\r', '\n'])
         };
         let is_top_item = |i: usize| {
             let t = item_of(i);
@@ -745,6 +746,24 @@ mod tests {
             DshYamlWriter.remove(FIXTURE, "agentmemory-hooks").unwrap(),
             FIXTURE
         );
+    }
+
+    #[test]
+    /// CRLF-authored patch files: a bare-dash top-level item ("-\r\n") must
+    /// still terminate the preceding block, or the block swallows the next
+    /// patch and a co-resident rebuild drops it — the exact bug the first
+    /// CRLF attempt claimed to fix while trimming only '\r' off a slice
+    /// that ends in '\n' (review round 3 caught the no-op).
+    #[test]
+    fn crlf_bare_dash_items_still_end_blocks() {
+        let crlf = "# header\r\n- insert:\r\n    - id: target\r\n      name: '@deepseek-ai/dsh-mcp-client'\r\n      config:\r\n        transport: stdio\r\n        serverName: target\r\n        command: old\r\n-\r\n- insert:\r\n    - id: keeper\r\n      name: '@deepseek-ai/dsh-hooks-claude-code'\r\n      config:\r\n        configPath: x\r\n";
+        let out = DshYamlWriter
+            .upsert(crlf, &entry("target", "stdio", Some("new"), &[], None, &[]))
+            .unwrap();
+        assert!(out.contains("keeper"), "next patch must survive: {out}");
+        assert!(out.contains("configPath: x"), "keeper body intact: {out}");
+        assert!(out.contains("command: 'new'"), "target replaced: {out}");
+        assert!(!out.contains("command: old"), "old command gone: {out}");
     }
 
     #[test]

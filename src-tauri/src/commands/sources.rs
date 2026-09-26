@@ -373,10 +373,12 @@ fn scan_new_skills(
     // recorded (`source_subpath IS NULL`), so the dedup probe below matches.
     for dir in super::skills::collect_git_skill_dirs(temp_dir) {
         let rel = git_fetcher::relative_subpath(temp_dir, &dir);
-        if let Some(r) = &rel {
-            if !seen.insert(r.clone()) {
-                continue;
-            }
+        // The root candidate (rel None, key "") joins the seen set too: two
+        // branch groups of one repo_key refreshing in the same pass would
+        // otherwise double-offer the uninstalled root skill.
+        let rel_key = rel.clone().unwrap_or_default();
+        if !seen.insert(rel_key) {
+            continue;
         }
         let already_installed =
             matches!(store.find_skill_by_repo_and_subpath(repo_key, rel.as_deref()), Ok(Some(_)));

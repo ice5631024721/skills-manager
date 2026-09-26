@@ -105,6 +105,18 @@ pub struct McpLibraryReport {
     pub agents: Vec<McpAgentStatus>,
 }
 
+/// Why a write stopped for confirmation: the ledger's own entry changed
+/// behind our back (Drift), or an entry we never wrote occupies the name
+/// (Foreign). CONTEXT.md keeps the two terms distinct, so the dialog titles
+/// differ — a typed enum keeps the wire contract from drifting into free
+/// text (the TS side is the matching "drift" | "foreign" union).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingDriftKind {
+    Drift,
+    Foreign,
+}
+
 /// What a write refused to do until the user confirms: the file's current
 /// text vs the text this operation would install.
 #[derive(Debug, Clone, Serialize)]
@@ -113,10 +125,7 @@ pub struct PendingDriftDto {
     pub token: String,
     pub current_text: String,
     pub planned_text: String,
-    /// "drift" = the ledger's own entry was changed behind our back;
-    /// "foreign" = an entry we never wrote occupies the name (CONTEXT.md
-    /// keeps the two terms distinct, so the dialog titles differ).
-    pub kind: String,
+    pub kind: PendingDriftKind,
 }
 
 /// Result of a multi-agent operation (edit/delete): which agents took the
@@ -447,7 +456,7 @@ pub(crate) fn write_entry_to_agent_at(
                         token,
                         current_text: text,
                         planned_text,
-                        kind: "foreign".to_string(),
+                        kind: PendingDriftKind::Foreign,
                     }));
                 }
             }
@@ -471,7 +480,7 @@ pub(crate) fn write_entry_to_agent_at(
                     token,
                     current_text: text,
                     planned_text,
-                    kind: "drift".to_string(),
+                    kind: PendingDriftKind::Drift,
                 }));
             }
         }
@@ -582,12 +591,12 @@ fn rename_in_agent(
             AppError::not_found(format!("no binding for agent '{agent_key}'"))
         })?;
 
-    let mut file_existed = true;
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
+        // An absent file gates as drift below (both names missing); opencode
+        // seeds from the template, DSH refuses (its patch file is DSH-owned).
         Err(err) if err.kind() == ErrorKind::NotFound => {
             if agent_key == "opencode" {
-                file_existed = false;
                 OPENCODE_EMPTY_TEMPLATE.to_string()
             } else {
                 return Err(AppError::invalid_input("DSH patch file not found"));
@@ -595,7 +604,6 @@ fn rename_in_agent(
         }
         Err(err) => return Err(AppError::io(err)),
     };
-    let _ = file_existed; // an absent file gates as drift below (both names missing)
 
     let planned = writer
         .remove(&text, &old_record.name)
@@ -610,17 +618,20 @@ fn rename_in_agent(
     let already_done = new_current
         .as_ref()
         .is_some_and(|(_, fp)| *fp == binding.fingerprint);
-    // Gates: the old entry drifted from the ledger (or vanished), or a
-    // foreign/other entry occupies the new name. Either way the write
-    // takes something the user did not see in this dialog — confirm.
-    let gated = !already_done
-        && (match &old_current {
-            Some((_, fp)) => *fp != binding.fingerprint,
-            None => true,
-        } || new_current
-            .as_ref()
-            .is_some_and(|(_, fp)| *fp != binding.fingerprint));
-    if gated && !already_done {
+    // After an interrupted rename the binding points at the NEW name, so
+    // anything sitting under the OLD name now is someone else's entry —
+    // removing it needs the same confirmation as any foreign overwrite
+    // (ADR-0006 clause 7 applies to leftovers too, not only fresh writes).
+    let old_is_foreign = already_done && old_current.is_some();
+    let gated = old_is_foreign
+        || (!already_done
+            && (match &old_current {
+                Some((_, fp)) => *fp != binding.fingerprint,
+                None => true,
+            } || new_current
+                .as_ref()
+                .is_some_and(|(_, fp)| *fp != binding.fingerprint)));
+    if gated {
         let token = drift_token(
             agent_key,
             &new_record.name,
@@ -633,13 +644,14 @@ fn rename_in_agent(
                 token,
                 current_text: text,
                 planned_text: planned,
-                kind: if new_current
-                    .as_ref()
-                    .is_some_and(|(_, fp)| *fp != binding.fingerprint)
+                kind: if old_is_foreign
+                    || new_current
+                        .as_ref()
+                        .is_some_and(|(_, fp)| *fp != binding.fingerprint)
                 {
-                    "foreign".to_string()
+                    PendingDriftKind::Foreign
                 } else {
-                    "drift".to_string()
+                    PendingDriftKind::Drift
                 },
             }));
         }
@@ -1374,6 +1386,11 @@ pub(crate) fn apply_mcp_upgrade_internal(
     let mut approved = approved_commands.to_vec();
     approved.sort();
     if derived != approved {
+        store.log_audit(
+            AuditDraft::new("mcp_upgrade")
+                .skill(id.to_string(), name.clone())
+                .fail("plan changed between confirm and apply; re-confirmation requested"),
+        );
         return Ok(ApplyUpgradeOutcome::PlanChanged {
             plan: UpgradePlanDto {
                 commands,
@@ -1381,7 +1398,10 @@ pub(crate) fn apply_mcp_upgrade_internal(
             },
         });
     }
-    let output = match mcp_upstream::run_commands(&commands) {
+    // Run in the order the dialog showed: the set is proven equal above, so
+    // "exactly what was confirmed" holds as a sequence too, not only as a
+    // set (ADR-0006 §1).
+    let output = match mcp_upstream::run_commands(approved_commands) {
         Ok(output) => output,
         Err(err) => {
             // Format before the audit moves `err`: the user-facing message and

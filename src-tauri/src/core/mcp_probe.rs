@@ -302,8 +302,10 @@ pub(crate) fn parse_probe_response_body(
         body.lines()
             .filter_map(|line| line.strip_prefix("data:"))
             .map(str::trim)
-            .find(|data| !data.is_empty() && *data != "[DONE]")
-            .and_then(|data| parse_response_line(data, REQUEST_ID))
+            .filter(|data| !data.is_empty() && *data != "[DONE]")
+            // find_map, not find-then-parse: a non-JSON keep-alive data line
+            // must not abort the search for the real response event.
+            .find_map(|data| parse_response_line(data, REQUEST_ID))
     } else {
         parse_response_line(body, REQUEST_ID)
     }

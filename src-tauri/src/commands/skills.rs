@@ -1338,6 +1338,15 @@ pub async fn confirm_git_install(
 
         let result: Result<GitInstallOutcome, AppError> = (|| {
             let mut outcome = GitInstallOutcome::default();
+            // Deferred-flush safety net: rows written before a mid-loop
+            // failure must still reach the metadata files, or the startup
+            // reindex prunes them as orphans (silent uninstall of the
+            // batch's earlier skills). Drops on every exit path, panics
+            // included; the explicit flush below disarms it.
+            let mut flush_guard = MetadataFlushGuard {
+                store: &store,
+                dirty: false,
+            };
             if items.is_empty() {
                 return Ok(outcome);
             }
@@ -1393,6 +1402,7 @@ pub async fn confirm_git_install(
                 };
                 let installed_id =
                     store_installed_skill_unlocked_deferred(&store, &result, &metadata, None)?;
+                flush_guard.dirty = true;
                 outcome.installed.push(GitInstalledSkill {
                     id: installed_id,
                     name: result.name,
@@ -1404,6 +1414,7 @@ pub async fn confirm_git_install(
             if !outcome.installed.is_empty() {
                 sync_metadata::write_all_from_db_unlocked(&store).map_err(AppError::db)?;
             }
+            flush_guard.disarm();
             spawn_description_fetch(&store, Some(&repo_url), "git");
             Ok(outcome)
         })();
@@ -2719,6 +2730,30 @@ pub fn store_installed_skill_unlocked(
     Ok(id)
 }
 
+/// Flushes the library-wide metadata files on drop if still dirty — the
+/// safety net for deferred-flush batches: a mid-loop error or panic must
+/// not leave DB rows without metadata, or the startup reindex prunes them
+/// as orphans (silent uninstall). Best-effort by design: a flush failure
+/// on an already-failing path must not mask the original error.
+struct MetadataFlushGuard<'a> {
+    store: &'a SkillStore,
+    dirty: bool,
+}
+
+impl MetadataFlushGuard<'_> {
+    fn disarm(&mut self) {
+        self.dirty = false;
+    }
+}
+
+impl Drop for MetadataFlushGuard<'_> {
+    fn drop(&mut self) {
+        if self.dirty {
+            let _ = sync_metadata::write_all_from_db_unlocked(self.store);
+        }
+    }
+}
+
 /// Same ledger writes WITHOUT the full metadata rewrite. `write_all` is
 /// O(library) per call; a 40-skill batch install calling it per skill made
 /// the confirm loop O(batch × library) — ~2s per skill of pure metadata
@@ -3108,15 +3143,25 @@ pub fn collect_git_skill_dirs(skill_dir: &Path) -> Vec<PathBuf> {
         "testing",
     ];
     dirs.retain(|dir| {
-        !dir.strip_prefix(skill_dir)
+        let keep = dir
+            .strip_prefix(skill_dir)
             .map(|rel| {
-                rel.components().any(|c| {
-                    c.as_os_str()
-                        .to_str()
-                        .is_some_and(|name| TESTISH.contains(&name))
+                // Ancestors only: a legit top-level skill whose own name is
+                // "tests"/"fixtures" must stay visible (hiding it would be
+                // the same silent-drop class this filter exists to prevent).
+                let comps: Vec<_> = rel.components().collect();
+                let ancestors = comps.get(..comps.len().saturating_sub(1)).unwrap_or(&[]);
+                !ancestors.iter().any(|c| {
+                    c.as_os_str().to_str().is_some_and(|name| {
+                        TESTISH.contains(&name.to_ascii_lowercase().as_str())
+                    })
                 })
             })
-            .unwrap_or(false)
+            .unwrap_or(true);
+        if !keep {
+            log::debug!("git scan: skipping test-fixture candidate {}", dir.display());
+        }
+        keep
     });
     dirs.sort();
     dirs
@@ -3952,6 +3997,9 @@ mod tests {
         // Repo-internal test trees are fixture content too, even though they
         // sit outside any skill dir (gstack ships test/fixtures/…/alpha).
         write_skill_at(root, "test/fixtures/context-bill/tree-a/alpha");
+        // …but a legit skill whose OWN name is test-ish stays visible: the
+        // filter matches ancestor components only.
+        write_skill_at(root, "testing");
         fs::create_dir_all(root.join("bin")).unwrap();
 
         let dirs = collect_git_skill_dirs(root);
@@ -3959,11 +4007,12 @@ mod tests {
         assert!(dirs.contains(&root.to_path_buf()), "umbrella root must be a candidate");
         assert!(keys.contains(&"qa".to_string()));
         assert!(keys.contains(&"ship".to_string()));
+        assert!(keys.contains(&"testing".to_string()), "own-name test-ish skill must survive");
         assert!(
             !keys.iter().any(|k| k.contains("fixtures")),
             "fixture SKILL.md must not leak: {keys:?}"
         );
-        assert_eq!(dirs.len(), 3);
+        assert_eq!(dirs.len(), 4);
     }
 
     #[test]
