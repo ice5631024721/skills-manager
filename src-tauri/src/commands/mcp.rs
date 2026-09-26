@@ -81,6 +81,10 @@ pub struct McpBindingDto {
     pub fingerprint: String,
     pub drift: bool,
     pub drift_reason: Option<String>,
+    /// The agent's live entry differs from the definition's command (adopted
+    /// as-is at takeover). Not drift — nobody changed anything — but the
+    /// card must not claim this agent runs the definition verbatim.
+    pub variant: bool,
 }
 
 /// A library definition plus its deployment ledger. The record serializes
@@ -186,6 +190,26 @@ fn entry_from_record(record: &McpServerRecord) -> McpEntryDef {
         url: record.url.clone(),
         env: record.env.clone(),
     }
+}
+
+/// The fingerprint the definition would read back with in one agent's
+/// format — the baseline a binding's live entry is compared against to
+/// tell "adopted with its own command" (variant) from "as defined".
+/// Rendered through a scratch document because formats normalize
+/// (opencode maps streamable-http→http, drops remote env).
+fn record_fingerprint_via(
+    writer: &dyn McpWriter,
+    agent_key: &str,
+    record: &McpServerRecord,
+) -> Option<String> {
+    let scratch = match agent_key {
+        "opencode" => OPENCODE_EMPTY_TEMPLATE,
+        _ => "",
+    };
+    let rendered = writer
+        .upsert(scratch, &entry_from_record(record))
+        .ok()?;
+    current_entry_and_fingerprint(writer, &rendered, &record.name).map(|(_, fp)| fp)
 }
 
 /// Name validation for add/edit: trimmed, non-empty, and free of the two
@@ -517,6 +541,10 @@ pub(crate) fn get_mcp_library_internal(
         .iter()
         .map(|server| (server.id.as_str(), server.name.as_str()))
         .collect();
+    let servers_by_id: BTreeMap<&str, &McpServerRecord> = servers
+        .iter()
+        .map(|server| (server.id.as_str(), server))
+        .collect();
 
     // agent_key -> resolve outcome; the file text is loaded lazily per agent
     // and shared by all of that agent's bindings.
@@ -551,21 +579,29 @@ pub(crate) fn get_mcp_library_internal(
             .get(binding.server_id.as_str())
             .copied()
             .unwrap_or("<deleted>");
-        let (drift, drift_reason) = match state {
-            Err(message) => (true, Some(message.clone())),
+        let record = servers_by_id.get(binding.server_id.as_str());
+        let (drift, drift_reason, variant) = match state {
+            Err(message) => (true, Some(message.clone()), false),
             Ok(state) => match &state.text {
                 // The file is gone: nothing matches what we wrote.
-                None => (true, Some("config file not found".to_string())),
+                None => (true, Some("config file not found".to_string()), false),
                 Some(text) => match state.writer.read_entry(text, server_name) {
                     Ok(Some(entry)) if entry_fingerprint(&entry) == binding.fingerprint => {
-                        (false, None)
+                        // Live and as-adopted: is it still the definition's
+                        // own command, or a variant kept from takeover?
+                        let variant = record.is_some_and(|record| {
+                            record_fingerprint_via(state.writer, &binding.agent_key, record)
+                                .is_some_and(|fp| fp != binding.fingerprint)
+                        });
+                        (false, None, variant)
                     }
                     Ok(Some(_)) => (
                         true,
                         Some("entry was hand-edited since the last write".to_string()),
+                        false,
                     ),
-                    Ok(None) => (true, Some("entry is no longer in the config file".to_string())),
-                    Err(err) => (true, Some(format!("config file not parseable: {err}"))),
+                    Ok(None) => (true, Some("entry is no longer in the config file".to_string()), false),
+                    Err(err) => (true, Some(format!("config file not parseable: {err}")), false),
                 },
             },
         };
@@ -578,6 +614,7 @@ pub(crate) fn get_mcp_library_internal(
                 fingerprint: binding.fingerprint.clone(),
                 drift,
                 drift_reason,
+                variant,
             });
     }
 
@@ -921,22 +958,14 @@ pub(crate) fn takeover_mcp_entry_internal(
                 "\"{server_name}\" is already managed in agent '{agent_key}'"
             )));
         }
-        // Equivalent means: upserting the managed definition over this file
-        // would read back exactly what is there now — claiming it changes no
-        // bytes of meaning. Transport normalization (streamable-http→http in
-        // opencode) is accounted for by comparing read-back fingerprints.
+        // Claim in place regardless of whether the copy matches the record:
+        // takeover is consent to manage, not an install — the agent keeps
+        // running its own command, the binding tracks that file state by
+        // fingerprint, and the divergence surfaces on the card as a
+        // "variant" dot (click = align to the definition). Asking which
+        // copy is canonical here charged a consent action with an
+        // install-time decision.
         let current_fp = entry_fingerprint(&entry);
-        let planned = writer
-            .upsert(&text, &entry_from_record(&existing))
-            .map_err(writer_err)?;
-        let equivalent = current_entry_and_fingerprint(writer, &planned, server_name)
-            .is_some_and(|(_, fp)| fp == current_fp);
-        if !equivalent {
-            return Err(AppError::invalid_input(format!(
-                "\"{server_name}\" in agent '{agent_key}' differs from the managed definition; \
-                 sync it to overwrite after review, or edit the definition to match"
-            )));
-        }
         store
             .upsert_mcp_binding(&McpBindingRecord {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -1046,12 +1075,70 @@ pub(crate) fn check_mcp_updates_internal(store: &SkillStore, force: Option<bool>
     mcp_upstream::check_latest(store, proxy.as_deref()).len() as u32
 }
 
+/// An upgrade acts on what is actually installed: each binding's LIVE
+/// command (an agent may run its own variant kept from takeover) is
+/// inferred into a source, and the union of distinct sources' commands is
+/// the plan. An npx copy and a global install of the same package need
+/// different commands — both must run, and the confirm dialog shows all
+/// of them (ADR-0006 §1).
+fn upgrade_command_union(
+    store: &SkillStore,
+    record: &McpServerRecord,
+    npx_root: Option<&Path>,
+    resolve: AgentResolver,
+) -> Result<Vec<String>, AppError> {
+    let bindings = store
+        .get_mcp_bindings_for_server(&record.id)
+        .map_err(store_err)?;
+    let mut sources: Vec<mcp_upstream::McpSource> = Vec::new();
+    if bindings.is_empty() {
+        sources.push(mcp_upstream::parse_source(&record.source).map_err(AppError::invalid_input)?);
+    }
+    for binding in &bindings {
+        let live = resolve(&binding.agent_key)
+            .ok()
+            .and_then(|(path, writer)| {
+                std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| writer.read_entry(&text, &record.name).ok().flatten())
+            });
+        let (command, args) = match &live {
+            Some(entry) => (entry.command.clone(), entry.args.clone()),
+            // Agent config gone: fall back to the record so the plan still
+            // names what the definition points at.
+            None => (record.command.clone(), record.args.clone()),
+        };
+        sources.push(mcp_upstream::infer_source(command.as_deref(), &args));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut commands: Vec<String> = Vec::new();
+    let mut last_err: Option<String> = None;
+    for source in &sources {
+        let key = serde_json::to_string(source).unwrap_or_default();
+        if !seen.insert(key) {
+            continue;
+        }
+        match mcp_upstream::upgrade_commands_for_source(source, npx_root) {
+            Ok(cmds) => commands.extend(cmds),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    let mut seen_cmd = std::collections::HashSet::new();
+    commands.retain(|c| seen_cmd.insert(c.clone()));
+    if commands.is_empty() {
+        return Err(AppError::invalid_input(
+            last_err.unwrap_or_else(|| "no upstream source".to_string()),
+        ));
+    }
+    Ok(commands)
+}
+
 pub(crate) fn get_mcp_upgrade_plan_internal(
     store: &SkillStore,
     id: &str,
 ) -> Result<UpgradePlanDto, AppError> {
     let record = load_record(store, id)?;
-    let commands = mcp_upstream::upgrade_commands(&record).map_err(AppError::invalid_input)?;
+    let commands = upgrade_command_union(store, &record, None, &resolve_agent_config)?;
     Ok(UpgradePlanDto {
         commands,
         latest_version: record.remote_version,
@@ -1064,7 +1151,9 @@ pub(crate) fn get_mcp_upgrade_plan_internal(
 pub(crate) fn apply_mcp_upgrade_internal(store: &SkillStore, id: &str) -> Result<String, AppError> {
     let record = load_record(store, id)?;
     let name = record.name.clone();
-    let commands = mcp_upstream::upgrade_commands(&record).map_err(AppError::invalid_input)?;
+    // Re-derived from the live bindings, never from a client-side echo
+    // (ADR-0006 §1's confirm-then-run-exactly-what-was-shown contract).
+    let commands = upgrade_command_union(store, &record, None, &resolve_agent_config)?;
     let output = match mcp_upstream::run_commands(&commands) {
         Ok(output) => output,
         Err(err) => {
@@ -1645,12 +1734,104 @@ mod tests {
         assert_eq!(store.get_mcp_bindings_for_server(&id).unwrap().len(), 2);
         assert_eq!(read(&a2), entry.to_string(), "claiming never rewrites");
 
-        // A3's copy differs: claiming would silently pick a definition, so
-        // it defers to the sync path's overwrite confirmation.
-        let err =
-            takeover_mcp_entry_internal(&store, "a3", "gem", &resolver).unwrap_err();
-        assert!(err.message.contains("differs"), "got: {}", err.message);
-        assert_eq!(store.get_mcp_bindings_for_server(&id).unwrap().len(), 2);
+        // A divergent copy is claimed too: takeover is consent to manage,
+        // not an install — the agent keeps its own command and the card
+        // shows the divergence as a variant dot.
+        let id3 = takeover_mcp_entry_internal(&store, "a3", "gem", &resolver).unwrap();
+        assert_eq!(id, id3);
+        assert_eq!(store.get_mcp_bindings_for_server(&id).unwrap().len(), 3);
+        assert_eq!(
+            read(&a3),
+            entry_json("gem", "/other/gem", &["--x"]).to_string(),
+            "claiming a divergent copy still never rewrites"
+        );
+    }
+
+    /// Upgrade acts on what is installed, per binding: an npx copy and a
+    /// global-install copy of the same package produce BOTH commands in one
+    /// confirm dialog, instead of the record's single source silently
+    /// missing half the installs.
+    #[test]
+    fn upgrade_plan_unions_the_live_commands_of_divergent_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&dir.path().join("test.db")).unwrap();
+        let a1 = dir.path().join("a1.json");
+        let a2 = dir.path().join("a2.json");
+        std::fs::write(
+            &a1,
+            entry_json("mem", "npx", &["-y", "@agentmemory/mcp"]).to_string(),
+        )
+        .unwrap();
+        let node_cmd = format!(
+            "{}/node_modules/@agentmemory/mcp/bin.mjs",
+            dir.path().display()
+        );
+        std::fs::write(&a2, entry_json("mem", "node", &[&node_cmd]).to_string()).unwrap();
+        // A fake npx cache so the Npx source has something to clear.
+        let cache = dir
+            .path()
+            .join("npxroot/deadbeef/node_modules/@agentmemory/mcp");
+        std::fs::create_dir_all(&cache).unwrap();
+        let (a1c, a2c) = (a1.clone(), a2.clone());
+        let resolver: Box<dyn Fn(&str) -> Result<(PathBuf, &'static dyn McpWriter), AppError> + Send + Sync> =
+            Box::new(move |key: &str| {
+                let writer = writer_for_agent("opencode").unwrap();
+                match key {
+                    "a1" => Ok((a1c.clone(), writer)),
+                    "a2" => Ok((a2c.clone(), writer)),
+                    other => Err(AppError::invalid_input(format!("unknown {other}"))),
+                }
+            });
+
+        let id = takeover_mcp_entry_internal(&store, "a1", "mem", &resolver).unwrap();
+        takeover_mcp_entry_internal(&store, "a2", "mem", &resolver).unwrap();
+        let rec = store.get_mcp_server_by_id(&id).unwrap().unwrap();
+
+        let plan = upgrade_command_union(
+            &store,
+            &rec,
+            Some(&dir.path().join("npxroot")),
+            &resolver,
+        )
+        .unwrap();
+        assert!(
+            plan.iter().any(|c| c.starts_with("rm -rf")),
+            "npx cache clear missing: {plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|c| c.starts_with("npm i -g") && c.contains("@agentmemory/mcp@latest")),
+            "global install upgrade missing: {plan:?}"
+        );
+    }
+
+    /// A binding whose live entry differs from the definition's own command
+    /// reads as variant (adopted as-is), not drift (nobody changed anything);
+    /// aligning it via sync clears the flag.
+    #[test]
+    fn variant_dot_flags_an_adopted_divergent_copy_until_aligned() {
+        let h = harness();
+        std::fs::write(
+            &h.opencode,
+            entry_json("gem", "/other/gem", &["--x"]).to_string(),
+        )
+        .unwrap();
+        let rec = record("gem", "npx", &["-y", "@mcp/gem"]);
+        h.store.insert_mcp_server(&rec).unwrap();
+        takeover_mcp_entry_internal(&h.store, "opencode", "gem", &h.resolver).unwrap();
+
+        let report = get_mcp_library_internal(&h.store, &h.resolver).unwrap();
+        let binding = &report.servers[0].bindings[0];
+        assert!(!binding.drift, "adopted-as-is is not drift");
+        assert!(binding.variant, "live command differs from the definition");
+
+        // Align: sync overwrites with the definition (no drift gate — the
+        // binding fingerprint matches the file), and the variant clears.
+        sync_mcp_to_agent_internal(&h.store, &rec.id, "opencode", None, &h.resolver).unwrap();
+        let report = get_mcp_library_internal(&h.store, &h.resolver).unwrap();
+        let binding = &report.servers[0].bindings[0];
+        assert!(!binding.variant);
+        assert!(!binding.drift);
     }
 
     /// A YAML single-quoted scalar passes raw newlines through, so a value

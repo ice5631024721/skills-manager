@@ -273,13 +273,27 @@ fn shell_quote(value: &str) -> String {
 /// These mutate the *global* environment (npm -g, npx caches, uv cache, git
 /// clones) — which is precisely why they require confirmation.
 pub fn upgrade_commands(record: &McpServerRecord) -> Result<Vec<String>, String> {
-    match parse_source(&record.source)? {
+    let source = parse_source(&record.source)?;
+    upgrade_commands_for_source(&source, None)
+}
+
+/// The shell commands that upgrade one inferred source to its latest.
+/// `npx_root` injects the cache root for tests; `None` reads the real
+/// `~/.npm/_npx`.
+pub fn upgrade_commands_for_source(
+    source: &McpSource,
+    npx_root: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    match source {
         McpSource::None => Err("no upstream source".to_string()),
         McpSource::NpmGlobal { package } => {
             Ok(vec![format!("npm i -g {}", shell_quote(&format!("{package}@latest")))])
         }
         McpSource::Npx { package } => {
-            let dirs = npx_cache_dirs(&package);
+            let dirs = match npx_root {
+                Some(root) => npx_cache_dirs_in(root, package),
+                None => npx_cache_dirs(package),
+            };
             if dirs.is_empty() {
                 // No cache entry means nothing stale to clear; refusing beats
                 // showing an empty confirm dialog with a fake success path.
@@ -291,7 +305,7 @@ pub fn upgrade_commands(record: &McpServerRecord) -> Result<Vec<String>, String>
                 .collect())
         }
         McpSource::PypiUvx { package } => {
-            Ok(vec![format!("uv cache clean {}", shell_quote(&package))])
+            Ok(vec![format!("uv cache clean {}", shell_quote(package))])
         }
         McpSource::Git { clone_path, .. } => Ok(vec![format!(
             "git -C {} pull --ff-only",
