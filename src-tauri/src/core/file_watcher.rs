@@ -264,7 +264,36 @@ fn should_emit(event: &Event) -> bool {
     // writes FETCH_HEAD/refs/packed-refs every time refreshGitStatus runs;
     // forwarding those to the UI causes refreshAppData → setManagedSkills →
     // refreshGitStatus to loop back into another fetch.
-    event.paths.iter().any(|p| !is_in_git_dir(p))
+    //
+    // Same reasoning for the central repo's transient staging/backup
+    // directories (`.<name>.staged-<uuid>`, `.<name>.backup-<uuid>`): every
+    // update attempt writes and then removes one inside the watched skills
+    // dir — even a held-back one, which changes nothing — and the echo
+    // re-armed the startup auto-update round into a toast loop. The real
+    // skill directory still reports its own swap events.
+    event
+        .paths
+        .iter()
+        .any(|p| !is_in_git_dir(p) && !is_central_transient(p))
+}
+
+/// Whether `path` lies inside one of the central repo's transient swap
+/// directories. Anchored to a direct child of the central skills dir (the
+/// only place `staged_path_for` / `swap_skill_directory` write), so a user's
+/// own dot-dir elsewhere is never silenced.
+fn is_central_transient(path: &Path) -> bool {
+    is_central_transient_under(&central_repo::skills_dir(), path)
+}
+
+fn is_central_transient_under(skills_dir: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(skills_dir) else {
+        return false;
+    };
+    relative
+        .components()
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+        .is_some_and(super::installer::is_transient_entry)
 }
 
 fn is_in_git_dir(path: &Path) -> bool {
@@ -443,6 +472,49 @@ mod tests {
         assert_eq!(classify_mute(5, 10, &roots, &mixed), MuteVerdict::Foreign);
         // No path info (watch-set rescan) defers rather than vanishes.
         assert_eq!(classify_mute(5, 10, &roots, &[]), MuteVerdict::Foreign);
+    }
+
+    #[test]
+    fn repo_transient_staging_and_backup_paths_are_filtered() {
+        use super::is_central_transient_under;
+        use std::path::PathBuf;
+
+        let skills_dir = PathBuf::from("/repo/skills");
+        // The names `staged_path_for` / `swap_skill_directory` produce, and
+        // anything inside them (the recursive watcher reports child paths).
+        assert!(is_central_transient_under(
+            &skills_dir,
+            &PathBuf::from("/repo/skills/.foo.staged-6ec2e1a0-2f0f-4d2f-9a17-9b0d6c0d0f4e")
+        ));
+        assert!(is_central_transient_under(
+            &skills_dir,
+            &PathBuf::from("/repo/skills/.foo.staged-6ec2/SKILL.md")
+        ));
+        assert!(is_central_transient_under(
+            &skills_dir,
+            &PathBuf::from("/repo/skills/.foo.backup-6ec2/references/a.md")
+        ));
+        // The real skill directory and ordinary dotfiles are not transient:
+        // swaps under the skill's own name must still reach the UI.
+        assert!(!is_central_transient_under(
+            &skills_dir,
+            &PathBuf::from("/repo/skills/foo/SKILL.md")
+        ));
+        assert!(!is_central_transient_under(
+            &skills_dir,
+            &PathBuf::from("/repo/skills/.DS_Store")
+        ));
+        // Anchored: the same name outside the central skills dir (a linked
+        // workspace's own `.cache.backup-2024`, a hidden skill elsewhere) is
+        // the user's business, not our plumbing — it must still emit.
+        assert!(!is_central_transient_under(
+            &skills_dir,
+            &PathBuf::from("/agents/claude/skills/.cache.backup-2024/x.md")
+        ));
+        assert!(!is_central_transient_under(
+            &skills_dir,
+            &PathBuf::from("/repo/skills/nested/.foo.staged-1/SKILL.md")
+        ));
     }
 
     #[test]

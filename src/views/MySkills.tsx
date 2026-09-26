@@ -138,6 +138,16 @@ function centralDirName(skill: ManagedSkill) {
   return skill.central_path.split(/[\\/]/).filter(Boolean).pop() || skill.name;
 }
 
+/** The update the user has been asked to confirm, and what it would remove. */
+interface PendingRemovalState {
+  skill: ManagedSkill;
+  removals: api.PendingRemoval[];
+  approval: string | null;
+  /** Set when the pending replacement is a relink, so confirming re-uses the
+   *  directory the user already chose instead of asking for it again. */
+  relinkSource?: string;
+}
+
 export function MySkills() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -171,7 +181,7 @@ export function MySkills() {
   const [batchTagDialogOpen, setBatchTagDialogOpen] = useState(false);
   const [batchSyncDialogOpen, setBatchSyncDialogOpen] = useState(false);
   // Batch dialogs normally act on the multi-select selection; a group action
-  // (库维度) scopes them to the whole group instead.
+  // (library-wide scope) scopes them to the whole group instead.
   const [batchScopeSkillIds, setBatchScopeSkillIds] = useState<string[] | null>(null);
   const [batchToggling, setBatchToggling] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
@@ -209,28 +219,45 @@ export function MySkills() {
 
   const viewedPresetName = viewedPreset?.name || t("mySkills.currentPresetFallback");
 
-  // Fetch sort order whenever active preset changes
+  // Fetch sort order whenever active preset changes. The generation counter
+  // makes each fetch cancel-able by a newer one: an out-of-order response must
+  // never overwrite fresher state (also used by the guards below).
+  const presetOrderGenRef = useRef(0);
   useEffect(() => {
+    const gen = ++presetOrderGenRef.current;
     if (!viewedPreset) {
       setPresetSkillOrder([]);
       return;
     }
-    api.getPresetSkillOrder(viewedPreset.id).then(setPresetSkillOrder).catch(() => {});
+    api
+      .getPresetSkillOrder(viewedPreset.id)
+      .then((order) => {
+        if (presetOrderGenRef.current === gen) setPresetSkillOrder(order);
+      })
+      .catch(() => {});
   }, [viewedPreset, skills]);
 
   // Skills with an unresolved sync conflict get a "needs attention" badge
   // that jumps to the Backup page (merge-engine design §4 UI).
   const [conflictIds, setConflictIds] = useState<Set<string>>(new Set());
+  const conflictsGenRef = useRef(0);
   useEffect(() => {
+    const gen = ++conflictsGenRef.current;
     api.gitBackupPendingConflicts()
-      .then((rows) => setConflictIds(new Set(rows.map((row) => row.skill_id))))
-      .catch(() => setConflictIds(new Set()));
+      .then((rows) => {
+        if (conflictsGenRef.current === gen) setConflictIds(new Set(rows.map((row) => row.skill_id)));
+      })
+      .catch(() => {
+        if (conflictsGenRef.current === gen) setConflictIds(new Set());
+      });
   }, [skills]);
 
+  const allTagsGenRef = useRef(0);
   const refreshAllTags = async () => {
+    const gen = ++allTagsGenRef.current;
     try {
       const tags = await api.getAllTags();
-      setAllTags(tags);
+      if (allTagsGenRef.current === gen) setAllTags(tags);
     } catch {
       // not critical
     }
@@ -242,17 +269,16 @@ export function MySkills() {
 
   // Grouping metadata (sources) is cheap and changes rarely; refetch it
   // alongside skills so counts and membership stay honest.
+  const skillSourcesGenRef = useRef(0);
   const refreshSkillSources = useCallback(async () => {
+    const gen = ++skillSourcesGenRef.current;
     try {
-      setSkillSources(await api.getSkillSources());
+      const sources = await api.getSkillSources();
+      if (skillSourcesGenRef.current === gen) setSkillSources(sources);
     } catch {
       // Grouping is decorative — a failure just falls back to "ungrouped".
     }
   }, []);
-
-  useEffect(() => {
-    refreshSkillSources();
-  }, [refreshSkillSources]);
 
   useEffect(() => {
     refreshSkillSources();
@@ -451,7 +477,7 @@ export function MySkills() {
     });
   }, []);
 
-  // ── Group-level enable/disable (库维度开关) ──
+  // ── Group-level enable/disable (library-wide toggle) ──
   // One switch per section header drives the whole group's preset membership.
   // Acts on `allSkills` (filter-independent); mixed state renders centred.
   const [groupToggleBusy, setGroupToggleBusy] = useState<string | null>(null);
@@ -502,7 +528,8 @@ export function MySkills() {
     }
   };
 
-  // 库维度 agent 同步：点组头的 agent 点 = 整组安装/卸载到该 agent。
+  // Library-wide agent sync: clicking an agent dot in the group header
+  // installs/uninstalls the whole group for that agent.
   const handleGroupToggleTarget = async (
     section: GroupedSection,
     toolKey: string,
@@ -641,10 +668,12 @@ export function MySkills() {
   // Local-only status refresh: no `git fetch`, so it can fire from
   // dependency-driven effects without driving the file-watcher → refresh
   // → fetch feedback loop.
+  const gitStatusGenRef = useRef(0);
   const refreshGitStatusLocal = useCallback(async () => {
+    const gen = ++gitStatusGenRef.current;
     try {
       const status = await api.gitBackupStatus();
-      setGitStatus(status);
+      if (gitStatusGenRef.current === gen) setGitStatus(status);
     } catch {
       // not critical
     }
@@ -909,9 +938,9 @@ export function MySkills() {
     await Promise.all([refreshManagedSkills(), refreshTools()]);
   };
 
-  // ── Skill Source section actions (来源视角) ──
+  // ── Skill Source section actions (source view) ──
 
-  /** Whole-repo update with a summarized toast report (design §整仓更新). */
+  /** Whole-repo update with a summarized toast report (design §whole-repo update). */
   const handleRefreshSource = useCallback(
     async (source: SkillSource) => {
       if (refreshingSourceId) return;
@@ -1020,6 +1049,26 @@ export function MySkills() {
     }
   }, [sourceToRemove, selectedSkill, closeSkillDetail, t, refreshManagedSkills, refreshSkillSources]);
 
+  /** Shared result report for both batch-update entry points: toast about
+   *  refreshed / unchanged / failed, and ask about any held-back skills. */
+  const reportBatchUpdateResult = async (
+    result: api.BatchUpdateSkillsResult,
+    candidates: ManagedSkill[],
+  ) => {
+    if (result.refreshed > 0) {
+      toast.success(t("mySkills.batchUpdated", { count: result.refreshed }));
+    }
+    if (result.unchanged > 0) {
+      toast.info(t("mySkills.batchAlreadyUpToDate", { count: result.unchanged }));
+    }
+    if (result.held_back.length > 0) {
+      await askAboutHeldBack(result.held_back, candidates);
+    }
+    if (result.failed.length > 0) {
+      toast.error(t("mySkills.batchUpdateFailed", { count: result.failed.length }));
+    }
+  };
+
   const handleBatchRefresh = async () => {
     const refreshableSkills = skills.filter((skill) => selectedIds.has(skill.id) && canRefresh(skill));
     if (refreshableSkills.length === 0) return;
@@ -1027,23 +1076,7 @@ export function MySkills() {
     setBatchUpdating(true);
     try {
       const result = await api.batchUpdateSkills(refreshableSkills.map((skill) => skill.id));
-      if (result.refreshed > 0) {
-        toast.success(t("mySkills.batchUpdated", { count: result.refreshed }));
-      }
-      if (result.unchanged > 0) {
-        toast.info(t("mySkills.batchAlreadyUpToDate", { count: result.unchanged }));
-      }
-      if (result.held_back.length > 0) {
-        toast.warning(
-          t("mySkills.batchHeldBack", {
-            count: result.held_back.length,
-            names: result.held_back.slice(0, 3).join("、"),
-          })
-        );
-      }
-      if (result.failed.length > 0) {
-        toast.error(t("mySkills.batchUpdateFailed", { count: result.failed.length }));
-      }
+      await reportBatchUpdateResult(result, refreshableSkills);
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, t("common.error")));
     } finally {
@@ -1052,15 +1085,7 @@ export function MySkills() {
     }
   };
 
-  /** The update the user has been asked to confirm, and what it would remove. */
-  const [pendingRemoval, setPendingRemoval] = useState<{
-    skill: ManagedSkill;
-    removals: api.PendingRemoval[];
-    approval: string | null;
-    /** Set when the pending replacement is a relink, so confirming re-uses the
-     *  directory the user already chose instead of asking for it again. */
-    relinkSource?: string;
-  } | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemovalState | null>(null);
 
   const handleUpdateAvailableSkills = async () => {
     const updatableSkills = skills.filter(
@@ -1071,23 +1096,7 @@ export function MySkills() {
     setBatchUpdating(true);
     try {
       const result = await api.batchUpdateSkills(updatableSkills.map((skill) => skill.id));
-      if (result.refreshed > 0) {
-        toast.success(t("mySkills.batchUpdated", { count: result.refreshed }));
-      }
-      if (result.unchanged > 0) {
-        toast.info(t("mySkills.batchAlreadyUpToDate", { count: result.unchanged }));
-      }
-      if (result.held_back.length > 0) {
-        toast.warning(
-          t("mySkills.batchHeldBack", {
-            count: result.held_back.length,
-            names: result.held_back.slice(0, 3).join("、"),
-          })
-        );
-      }
-      if (result.failed.length > 0) {
-        toast.error(t("mySkills.batchUpdateFailed", { count: result.failed.length }));
-      }
+      await reportBatchUpdateResult(result, updatableSkills);
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, t("common.error")));
     } finally {
@@ -1174,6 +1183,35 @@ export function MySkills() {
     } finally {
       setUpdatingSkillId(null);
     }
+  };
+
+  /** A batch "has nobody to ask" — so ask now. Runs the first held-back
+   *  skill through the per-skill flow, which shows the exact removal list
+   *  in a confirm dialog, instead of leaving the user a dead-end toast that
+   *  repeats on every attempt. Still-held-back siblings are reported; the
+   *  next batch round asks about the next one. */
+  const askAboutHeldBack = async (heldNames: string[], candidates: ManagedSkill[]) => {
+    const held = candidates.filter((s) => heldNames.includes(s.name));
+    if (held.length === 0) {
+      // Names no longer among the candidates (renamed or removed mid-batch):
+      // fall back to the plain report.
+      toast.warning(
+        t("mySkills.batchHeldBack", {
+          count: heldNames.length,
+          names: heldNames.slice(0, 3).join(t("mySkills.nameSeparator")),
+        })
+      );
+      return;
+    }
+    if (held.length > 1) {
+      toast.warning(
+        t("mySkills.batchHeldBackRest", {
+          count: held.length - 1,
+          names: held.slice(1, 4).map((s) => s.name).join(t("mySkills.nameSeparator")),
+        })
+      );
+    }
+    await handleRefreshSkill(held[0]);
   };
 
   const handleRelinkSource = async (
@@ -2090,7 +2128,7 @@ export function MySkills() {
             </button>
             <button
               onClick={handleUpdateAvailableSkills}
-              disabled={batchUpdating || availableUpdateCount === 0}
+              disabled={batchUpdating || availableUpdateCount === 0 || pendingRemoval !== null}
               className="mr-2 inline-flex items-center gap-1 rounded-md px-3 py-2 text-[13px] font-medium text-accent-light transition-colors hover:bg-accent-bg disabled:opacity-50"
             >
               <RotateCcw className={cn("h-3.5 w-3.5", batchUpdating && "animate-spin")} />
@@ -2237,6 +2275,9 @@ export function MySkills() {
                   label: t("mySkills.batchUpdate", { count: refreshableSelectedCount }),
                   icon: <RotateCcw className="h-3.5 w-3.5" />,
                   busy: batchUpdating,
+                  // Same reason as the toolbar button: a second batch would
+                  // replace the removal list the user is reading.
+                  disabled: pendingRemoval !== null,
                   onSelect: handleBatchRefresh,
                 }]
               : []),

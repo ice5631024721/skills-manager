@@ -30,7 +30,6 @@ interface AppState {
   refreshManagedSkills: () => Promise<void>;
   refreshProjects: () => Promise<void>;
   setViewedPresetId: (id: string) => void;
-  applyPresetToDefault: (id: string) => Promise<void>;
   clearAppError: () => void;
   openHelp: () => void;
   closeHelp: () => void;
@@ -40,6 +39,15 @@ interface AppState {
 
 const VIEWED_PRESET_LS_KEY = "skills-manager.viewedPresetId";
 const LEGACY_VIEWED_PRESET_LS_KEY = "skills-manager.viewedScenarioId";
+
+/** Route to `path` via the history API (the app's router listens for
+ *  popstate). No-op when already on that route. */
+function navigateTo(path: string) {
+  if (!window.location.pathname.endsWith(path)) {
+    window.history.pushState(null, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
 
 const AppContext = createContext<AppState | null>(null);
 
@@ -63,7 +71,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null);
   const [appUpdate, setAppUpdate] = useState<AppUpdateInfo | null>(null);
-  const autoCheckInFlightRef = useRef(false);
+  const autoUpdateRoundRef = useRef(false);
   const appUpdateCheckedRef = useRef(false);
   const lastUpdateNotificationRef = useRef<string | null>(null);
   const lastActivePresetIdRef = useRef<string | null>(null);
@@ -156,14 +164,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const handleApplyPresetToDefault = useCallback(
-    async (id: string) => {
-      await api.applyPresetToDefault(id);
-      await Promise.all([refreshPresets(), refreshManagedSkills()]);
-    },
-    [refreshManagedSkills, refreshPresets]
-  );
-
   // Resolve viewedPreset: persisted id > activePreset > first preset.
   // Persist whichever resolves so the next launch matches what the user saw.
   const viewedPreset = (() => {
@@ -208,10 +208,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unlistenPromise = listen("tray-open-updates", () => {
       setDetailSkillId(null);
-      if (!window.location.pathname.endsWith("/my-skills")) {
-        window.history.pushState(null, "", "/my-skills");
-        window.dispatchEvent(new PopStateEvent("popstate"));
-      }
+      navigateTo("/my-skills");
     });
 
     return () => {
@@ -275,10 +272,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           label: i18n.t("mySkills.viewUpdates"),
           onClick: () => {
             setDetailSkillId(null);
-            if (!window.location.pathname.endsWith("/my-skills")) {
-              window.history.pushState(null, "", "/my-skills");
-              window.dispatchEvent(new PopStateEvent("popstate"));
-            }
+            navigateTo("/my-skills");
           },
         },
       }
@@ -323,12 +317,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               duration: 8000,
               action: {
                 label: i18n.t("settings.viewUpdate"),
-                onClick: () => {
-                  if (!window.location.pathname.endsWith("/settings")) {
-                    window.history.pushState(null, "", "/settings");
-                    window.dispatchEvent(new PopStateEvent("popstate"));
-                  }
-                },
+                onClick: () => navigateTo("/settings"),
               },
             }
           );
@@ -343,16 +332,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Check skill updates on startup (non-blocking, silent). When the user has
   // opted in via the Settings toggle, also apply any available updates.
+  //
+  // Once per process, not once per `loading` edge — same rule as the app
+  // version check above, and it matters doubly here: an applied round stages
+  // a skill inside the watched central repo, the echo arrives as
+  // `app-files-changed`, `refreshAppData` flips `loading`, and a re-armed
+  // effect starts another round. A held-back skill (its update would remove
+  // files and a batch has nobody to ask) never leaves `update_available`, so
+  // that cycle toasted the same warning forever. Periodic rounds are the
+  // Rust scheduler's job; this effect is the startup round only.
   useEffect(() => {
-    if (loading || managedSkills.length === 0) return;
+    if (loading || managedSkills.length === 0 || autoUpdateRoundRef.current) return;
     const hasGitSkills = managedSkills.some(
       (s) => s.source_type === "git" || s.source_type === "skillssh"
     );
-    if (!hasGitSkills || autoCheckInFlightRef.current) return;
+    if (!hasGitSkills) return;
 
-    // Delay to avoid slowing down initial render
+    // Delay to avoid slowing down initial render. Mark the round done inside
+    // the timer, not before it: a `loading` edge within the delay tears this
+    // effect down and clears the pending timer, and marking it done up front
+    // would skip the startup round for the rest of the session.
     const timer = setTimeout(() => {
-      autoCheckInFlightRef.current = true;
+      autoUpdateRoundRef.current = true;
       (async () => {
         try {
           await api.checkAllSkillUpdates(false);
@@ -383,7 +384,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 toast.warning(
                   i18n.t("mySkills.batchHeldBack", {
                     count: result.held_back.length,
-                    names: result.held_back.slice(0, 3).join("、"),
+                    names: result.held_back.slice(0, 3).join(i18n.t("mySkills.nameSeparator")),
                   })
                 );
               }
@@ -404,10 +405,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
             .catch(() => {});
         } catch (err) {
           // Startup round is non-blocking and does not toast on failure, but
-          // log so a broken check/update is still diagnosable.
+          // log so a broken check/update is still diagnosable. The round
+          // stays "done" either way: retrying it on the next refresh edge is
+          // what turned a held-back skill into an endless toast loop.
           console.error("Startup skill update round failed:", err);
-        } finally {
-          autoCheckInFlightRef.current = false;
         }
       })();
     }, 3000);
@@ -457,7 +458,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         refreshManagedSkills,
         refreshProjects,
         setViewedPresetId,
-        applyPresetToDefault: handleApplyPresetToDefault,
         clearAppError: () => setAppError(null),
         openHelp: () => setHelpOpen(true),
         closeHelp: () => setHelpOpen(false),
