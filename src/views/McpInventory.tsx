@@ -891,7 +891,9 @@ export function McpInventory() {
         onClick={isMultiSelect ? () => toggleSelect(card.name) : undefined}
       >
         {renderSelectBox(card)}
-        <div className="flex items-center gap-2 px-3.5 pt-3 pb-1.5">
+        {/* pr-9 reserves the hover checkbox's corner so it never sits on the
+            transport pill (the checkbox is absolute right-2 top-2). */}
+        <div className="flex items-center gap-2 pl-3.5 pr-9 pt-3 pb-1.5">
           <ProbeIndicator server={server} />
           <h3
             className="flex-1 truncate text-[14px] font-semibold text-primary group-hover:text-accent-light"
@@ -1036,7 +1038,7 @@ export function McpInventory() {
             <Loader2 className="h-5 w-5 animate-spin text-muted" />
           </div>
         )}
-        <div className="flex items-center gap-2.5 px-3.5 pt-3 pb-1.5">
+        <div className="flex items-center gap-2.5 pl-3.5 pr-9 pt-3 pb-1.5">
           <span
             className={cn(
               "h-2 w-2 shrink-0 rounded-full transition-opacity",
@@ -1261,7 +1263,7 @@ export function McpInventory() {
               {t("mcp.libraryEmpty")}
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+            <div className="grid grid-cols-2 items-start gap-3 lg:grid-cols-3">
               {cards.map((card) =>
                 card.kind === "managed" ? renderManagedCard(card) : renderForeignCard(card)
               )}

@@ -166,6 +166,19 @@ pub fn probe_stdio(entry: &McpEntryDef, timeout: Duration) -> Result<ProbeInfo, 
             cmd.env(key, value);
         }
     }
+    // A GUI process inherits a minimal PATH, but stdio servers live in the
+    // user's shell PATH (fnm shims, ~/.local/bin, cargo bins). Prepend the
+    // login-shell PATH so the probe spawns what the agent would spawn;
+    // without it every shell-installed server probes as "not found".
+    if let Some(shell_path) = login_shell_path() {
+        let base = std::env::var("PATH").unwrap_or_default();
+        let joined = if base.is_empty() {
+            shell_path
+        } else {
+            format!("{shell_path}:{base}")
+        };
+        cmd.env("PATH", joined);
+    }
     for (key, value) in &entry.env {
         cmd.env(key, value);
     }
@@ -260,6 +273,9 @@ pub fn probe_http(entry: &McpEntryDef, proxy: Option<&str>, timeout: Duration) -
 
     let response = client
         .post(url)
+        // Streamable-http servers may answer with plain JSON or with an SSE
+        // event stream; ask for both so neither side 406s the probe.
+        .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
         .json(&request)
         .send()
         .map_err(compact_http_error)?;
@@ -267,10 +283,62 @@ pub fn probe_http(entry: &McpEntryDef, proxy: Option<&str>, timeout: Duration) -
     if !status.is_success() {
         return Err(format!("HTTP {status} from {url}"));
     }
-    let body: serde_json::Value = response.json().map_err(compact_http_error)?;
-    // Reuse the stdio response parser (id match + result/error shapes).
-    parse_response_line(&body.to_string(), REQUEST_ID)
-        .ok_or_else(|| "response is not an initialize result for the probe request".to_string())?
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // Per the streamable-http spec the POST response is complete — the
+    // server closes an SSE stream after the response event (open-ended
+    // streams are the GET channel's job) — so reading the whole body is
+    // protocol-correct, and the client timeout bounds a misbehaving server.
+    let body = response.text().map_err(compact_http_error)?;
+    parse_probe_response_body(&content_type, &body)
+        .ok_or_else(|| format!("no initialize result in response from {url}"))?
+}
+
+/// Decide a probe answer from a (possibly partial) response body. `None`
+/// means "not decidable yet" — the caller keeps reading. SSE bodies hide
+/// the JSON-RPC payload in the first `data:` line; comment and keep-alive
+/// lines are skipped.
+pub(crate) fn parse_probe_response_body(
+    content_type: &str,
+    body: &str,
+) -> Option<Result<ProbeInfo, String>> {
+    if content_type.contains("text/event-stream") {
+        body.lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .find(|data| !data.is_empty() && *data != "[DONE]")
+            .and_then(|data| parse_response_line(data, REQUEST_ID))
+    } else {
+        parse_response_line(body, REQUEST_ID)
+    }
+}
+
+/// The user's interactive-shell PATH, resolved once per process through a
+/// login shell (fnm/nvm/cargo bins live there; a GUI process never sees it).
+fn login_shell_path() -> Option<String> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let output = if cfg!(windows) {
+                std::process::Command::new("cmd")
+                    .args(["/C", "echo %PATH%"])
+                    .output()
+            } else {
+                std::process::Command::new("sh")
+                    .args(["-lc", "printf %s \"$PATH\""])
+                    .output()
+            };
+            output
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .clone()
 }
 
 /// reqwest errors can be long-winded; collapse them to what a probe badge
@@ -576,6 +644,36 @@ mod tests {
         e.transport = "streamable-http".to_string();
         let err = probe_entry(&e, None, Duration::from_secs(1)).unwrap_err();
         assert!(err.contains("url"), "went down the http arm: {err}");
+    }
+
+    /// Streamable-http servers answer with SSE more often than with plain
+    /// JSON; the probe used to read only the latter and reported live
+    /// servers as dead.
+    #[test]
+    fn sse_response_bodies_are_decoded_from_the_first_data_line() {
+        let sse = ": keep-alive\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"serverInfo\":{\"name\":\"zvec\",\"version\":\"1\"}}}\n\nevent: noise\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n";
+        let parsed = parse_probe_response_body("text/event-stream; charset=utf-8", sse)
+            .expect("decidable")
+            .expect("initialize result");
+        assert_eq!(parsed.server_name.as_deref(), Some("zvec"));
+        assert_eq!(parsed.server_version.as_deref(), Some("1"));
+
+        // A stream cut mid-payload is not decidable yet — the reader loop
+        // must keep consuming chunks instead of answering from half a body.
+        assert!(parse_probe_response_body(
+            "text/event-stream",
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"res"
+        )
+        .is_none());
+
+        // Plain JSON bodies keep the old path.
+        let json = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
+        assert!(parse_probe_response_body("application/json", json)
+            .expect("decidable")
+            .is_ok());
+        // [DONE] sentinels and empty data lines are skipped, not answered.
+        assert!(parse_probe_response_body("text/event-stream", "data: [DONE]\n\n")
+            .is_none());
     }
 }
 
