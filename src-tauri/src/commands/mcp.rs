@@ -203,6 +203,46 @@ fn validate_name(raw: &str) -> Result<String, AppError> {
     Ok(name.to_string())
 }
 
+/// Reject control characters in any scalar that lands in an agent config file.
+/// YAML single-quoted scalars pass raw newlines through: an env value
+/// containing "\n- insert:" would put a block opener at column 0 of
+/// cordis.patch.yml, where the writer's block scanner splits ranges by
+/// column-0 markers — surgery would target the wrong range while the
+/// re-parse check still passes (serde_yaml reads it as a folded scalar).
+/// Tabs are legal inside scalars and never start a line, so they stay.
+fn validate_entry_scalars(entry: &McpEntryDef) -> Result<(), AppError> {
+    fn has_control(s: &str) -> bool {
+        s.chars().any(|c| c.is_control() && c != '\t')
+    }
+    let mut fields = Vec::new();
+    if has_control(&entry.name) {
+        fields.push("name");
+    }
+    if entry.command.as_deref().is_some_and(has_control) {
+        fields.push("command");
+    }
+    if entry.args.iter().any(|a| has_control(a)) {
+        fields.push("args");
+    }
+    if entry.url.as_deref().is_some_and(has_control) {
+        fields.push("url");
+    }
+    if entry
+        .env
+        .iter()
+        .any(|(k, v)| has_control(k) || has_control(v))
+    {
+        fields.push("env");
+    }
+    if fields.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::invalid_input(format!(
+        "MCP entry fields ({}) must not contain newlines or control characters",
+        fields.join(", ")
+    )))
+}
+
 /// Validate the incoming source JSON against [`McpSource`], and materialize a
 /// git source into the central cache (ADR-0006 §1) so the stored record
 /// carries a real `clone_path`. A failed clone aborts the caller's operation.
@@ -588,6 +628,10 @@ pub(crate) fn add_mcp_server_internal(
         created_at: now,
         updated_at: now,
     };
+    // Every persisted record is validated, takeover included: a stored entry
+    // can be re-emitted to DSH by a later sync (ADR-0006 §4's surgery must
+    // never see a scalar that can fake a column-0 block opener).
+    validate_entry_scalars(&entry_from_record(&record))?;
     store.insert_mcp_server(&record).map_err(store_err)?;
 
     // Fresh add: no bindings exist yet, so drift is structurally impossible;
@@ -659,6 +703,7 @@ pub(crate) fn edit_mcp_server_internal(
     updated.url = entry.url;
     updated.env = entry.env;
     updated.source = source;
+    validate_entry_scalars(&entry_from_record(&updated))?;
     let content_changed = current.name != updated.name
         || current.transport != updated.transport
         || current.command != updated.command
@@ -880,6 +925,10 @@ pub(crate) fn takeover_mcp_entry_internal(
         created_at: now,
         updated_at: now,
     };
+    // Every persisted record is validated, takeover included: a stored entry
+    // can be re-emitted to DSH by a later sync (ADR-0006 §4's surgery must
+    // never see a scalar that can fake a column-0 block opener).
+    validate_entry_scalars(&entry_from_record(&record))?;
     store.insert_mcp_server(&record).map_err(store_err)?;
     store
         .upsert_mcp_binding(&McpBindingRecord {
@@ -1461,7 +1510,11 @@ mod tests {
     #[test]
     fn sync_over_foreign_same_name_is_refused() {
         let h = harness();
-        std::fs::write(&h.opencode, entry_json("x", "/foreign/x", &["--other"]).to_string()).unwrap();
+        std::fs::write(
+            &h.opencode,
+            entry_json("x", "/foreign/x", &["--other"]).to_string(),
+        )
+        .unwrap();
         let rec = record("x", "npx", &["-y", "@o/x"]);
         h.store.insert_mcp_server(&rec).unwrap();
 
@@ -1470,6 +1523,35 @@ mod tests {
                 .unwrap_err();
         assert_eq!(err.kind, crate::core::error::ErrorKind::InvalidInput);
         assert!(err.message.contains("take it over"), "got: {}", err.message);
+    }
+
+    /// A YAML single-quoted scalar passes raw newlines through, so a value
+    /// like "ok\n- insert:" would land a block opener at column 0 of
+    /// cordis.patch.yml and fool the writer's block scanner mid-surgery —
+    /// while the re-parse validation still passes. The only safe gate is at
+    /// the door: no control characters in any scalar that can be persisted.
+    #[test]
+    fn newline_in_a_scalar_is_refused_before_it_can_fake_a_block() {
+        let h = harness();
+        let mut env = BTreeMap::new();
+        env.insert("EVIL".to_string(), "ok\n- insert:\n  fake".to_string());
+        let entry = McpEntryDefDto {
+            name: "nv".to_string(),
+            transport: "stdio".to_string(),
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "@o/nv".to_string()],
+            url: None,
+            env,
+        };
+        let err =
+            add_mcp_server_internal(&h.store, entry, json!({"kind": "none"}), &[], &h.resolver)
+                .unwrap_err();
+        assert_eq!(err.kind, crate::core::error::ErrorKind::InvalidInput);
+        assert!(err.message.contains("env"), "got: {}", err.message);
+        assert!(
+            h.store.get_mcp_server_by_name("nv").unwrap().is_none(),
+            "rejected add must persist nothing"
+        );
     }
 
     #[test]
