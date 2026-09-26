@@ -22,6 +22,10 @@ use crate::core::{
     timing::should_log_first_or_slow,
 };
 
+// The update-swap primitives live with the installer that stages into them;
+// imported unqualified so the swap call sites read the same as before.
+use crate::core::installer::{remove_path_if_exists, staged_path_for, swap_skill_directory};
+
 #[derive(Debug, Serialize)]
 pub struct UpdateSkillResult {
     pub skill: ManagedSkillDto,
@@ -1171,8 +1175,13 @@ pub async fn install_from_skillssh(
                 let skill_dir = resolve_skill_dir(&temp_dir, None, Some(&skill_id))?;
                 let revision = git_fetcher::get_head_revision(&temp_dir).map_err(AppError::git)?;
                 let source_ref = format!("{}/{}", source, skill_id);
-                let (install_name, destination) =
-                    resolve_skillssh_install_target(&store, &source_ref, &skill_id)?;
+                let subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
+                let (install_name, destination) = resolve_skillssh_install_target(
+                    &store,
+                    &source_ref,
+                    &skill_id,
+                    subpath.as_deref(),
+                )?;
                 let result = installer::install_skill_dir_to_destination(
                     &skill_dir,
                     &install_name,
@@ -1183,7 +1192,7 @@ pub async fn install_from_skillssh(
                     source_type: "skillssh".to_string(),
                     source_ref: Some(source_ref),
                     source_ref_resolved: Some(repo_url.clone()),
-                    source_subpath: git_fetcher::relative_subpath(&temp_dir, &skill_dir),
+                    source_subpath: subpath,
                     source_branch: None,
                     source_revision: Some(revision.clone()),
                     remote_revision: Some(revision),
@@ -1449,7 +1458,7 @@ pub async fn check_all_skill_updates(
         // monorepo collapse to a single `ls-remote`, and each remote is queried
         // off the central-repo lock so a slow remote (e.g. vercel/ai's ref
         // advertisement runs ~30s) never starves a concurrent check into a 20s
-        // lock-timeout "busy" failure — the reason "检查全部" both crawled and
+        // lock-timeout "busy" failure — the reason "Check All" both crawled and
         // popped failures.
         let mut remotes: HashSet<RemoteKey> = HashSet::new();
         for skill in &skills {
@@ -1680,6 +1689,15 @@ pub async fn update_skill(
     let _cancel_guard = CancelRegistrationGuard::new(registry.clone(), cancel_key);
 
     tauri::async_runtime::spawn_blocking(move || {
+        // The audit label is the skill's own source type: `update_skill`
+        // serves both git and skillssh rows, and logging a market skill as
+        // "git" made the trail disagree with what happened.
+        let source_label = store
+            .get_skill_by_id(&skill_id)
+            .ok()
+            .flatten()
+            .map(|s| s.source_type)
+            .unwrap_or_else(|| "git".to_string());
         let outcome =
             update_git_skill_internal(
                 &store,
@@ -1688,7 +1706,7 @@ pub async fn update_skill(
                 Some(&cancel),
                 approved_removals.as_deref(),
             );
-        log_update_outcome(&store, &skill_id, "git", outcome.as_ref());
+        log_update_outcome(&store, &skill_id, &source_label, outcome.as_ref());
         outcome
     })
     .await?
@@ -1734,9 +1752,10 @@ pub async fn batch_update_skills(
 
             match skill.source_type.as_str() {
                 "git" | "skillssh" => {
+                    let source_label = skill.source_type.clone();
                     let outcome =
                         update_git_skill_internal(&store, &skill_id, proxy_url.as_deref(), None, None);
-                    log_update_outcome(&store, &skill_id, "git", outcome.as_ref());
+                    log_update_outcome(&store, &skill_id, &source_label, outcome.as_ref());
                     match outcome {
                         Ok(result) if !result.pending_removals.is_empty() => {
                             // Held back rather than applied: it would have taken
@@ -3156,12 +3175,28 @@ pub fn resolve_skillssh_install_target(
     store: &SkillStore,
     source_ref: &str,
     skill_id: &str,
+    subpath: Option<&str>,
 ) -> Result<(String, PathBuf), AppError> {
     if let Some(existing) = store
         .get_skill_by_source_ref("skillssh", source_ref)
         .map_err(AppError::db)?
     {
         return Ok((existing.name, PathBuf::from(existing.central_path)));
+    }
+
+    // ADR-0003 cross-channel dedup: the same repo+path may already be
+    // installed through a git URL. The market ref names `owner/repo`'s
+    // directory, so probe the canonical key + subpath exactly like the git
+    // install does — a hit means reinstall-in-place, never a second copy.
+    if let Some(key) = crate::core::repo_key::skillssh_repo_key(source_ref) {
+        if let Some((existing_id, _)) = store
+            .find_skill_by_repo_and_subpath(&key, subpath)
+            .map_err(AppError::db)?
+        {
+            if let Some(skill) = store.get_skill_by_id(&existing_id).map_err(AppError::db)? {
+                return Ok((skill.name, PathBuf::from(skill.central_path)));
+            }
+        }
     }
 
     let base_name = skill_id.trim();
@@ -3189,41 +3224,6 @@ pub fn resolve_skillssh_install_target(
 
         attempt += 1;
     }
-}
-
-pub fn staged_path_for(central_path: &str) -> PathBuf {
-    let path = PathBuf::from(central_path);
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "skill".to_string());
-    path.with_file_name(format!(".{file_name}.staged-{}", uuid::Uuid::new_v4()))
-}
-
-pub fn swap_skill_directory(staged_path: &Path, current_path: &Path) -> Result<(), AppError> {
-    let backup_path = current_path.with_file_name(format!(
-        ".{}.backup-{}",
-        current_path
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "skill".to_string()),
-        uuid::Uuid::new_v4()
-    ));
-
-    if current_path.exists() {
-        std::fs::rename(current_path, &backup_path)?;
-    }
-
-    if let Err(err) = std::fs::rename(staged_path, current_path) {
-        if backup_path.exists() {
-            let _ = std::fs::rename(&backup_path, current_path);
-        }
-        let _ = remove_path_if_exists(staged_path);
-        return Err(err.into());
-    }
-
-    remove_path_if_exists(&backup_path)?;
-    Ok(())
 }
 
 pub fn resync_copy_targets(store: &SkillStore, skill_id: &str) -> Result<(), AppError> {
@@ -3478,15 +3478,6 @@ pub async fn batch_import_folder(
     .await?
 }
 
-fn remove_path_if_exists(path: &Path) -> Result<(), AppError> {
-    if path.is_dir() {
-        std::fs::remove_dir_all(path)?;
-    } else if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3732,6 +3723,44 @@ mod tests {
             .is_empty());
     }
 
+    /// ADR-0003 cross-channel dedup: a skill already installed from
+    /// `github.com/o/r` at subpath `handdraw` must be found by a market
+    /// install of the same repo+skill — reinstalled in place, never a second
+    /// copy (`handdraw-2`).
+    #[test]
+    fn skillssh_target_reuses_the_git_installed_skill_for_same_repo_and_path() {
+        let repo = test_repo();
+        let central = write_skill_dir("handdraw");
+        repo.store
+            .insert_skill(&SkillRecord {
+                source_type: "git".to_string(),
+                source_subpath: Some("handdraw".to_string()),
+                ..sample_skill("git-row", "handdraw", &central)
+            })
+            .unwrap();
+        let source_id = repo
+            .store
+            .ensure_skill_source(
+                "github.com/yang0/handraw-style",
+                "https://github.com/yang0/handraw-style.git",
+            )
+            .unwrap();
+        repo.store
+            .set_skill_source("git-row", Some(&source_id))
+            .unwrap();
+
+        let (name, destination) = resolve_skillssh_install_target(
+            &repo.store,
+            "yang0/handraw-style/handdraw",
+            "handdraw",
+            Some("handdraw"),
+        )
+        .unwrap();
+
+        assert_eq!(name, "handdraw");
+        assert_eq!(destination, central);
+    }
+
     /// An approval answers one exact question: this revision, this list.
     #[test]
     fn an_approval_does_not_carry_to_a_different_revision_or_list() {
@@ -3973,7 +4002,7 @@ mod tests {
     }
 
     /// A single remote failing must be stored as `Err` for that key alone and
-    /// never abort the batch (the "检查全部 both crawled and popped failures" fix
+    /// never abort the batch (the "Check All both crawled and popped failures" fix
     /// depends on this isolation).
     #[test]
     fn resolve_concurrent_isolates_per_remote_failures() {

@@ -6,7 +6,7 @@ use anyhow::{Context, anyhow, bail};
 use app_lib::commands::{presets as preset_cmd, skills as cmd, tools as tool_cmd};
 use app_lib::core::{
     app_state, audit_log::AuditDraft, central_repo, error::AppError, git_backup, git_fetcher,
-    installer, merge, repo_lock::RepoLock, scenario_service, skill_metadata,
+    installer, merge, repo_key, repo_lock::RepoLock, scenario_service, skill_metadata,
     skill_store::SkillStore, skillssh_api, sync_engine, sync_metadata, tool_adapters, tool_service,
 };
 use clap::{Args, Parser, Subcommand};
@@ -1572,6 +1572,23 @@ fn install_git_action(
         let skill_dir = cmd::resolve_skill_dir(&temp_dir, parsed.subpath.as_deref(), None)
             .map_err(map_app_err)?;
         let revision = git_fetcher::get_head_revision(&temp_dir)?;
+
+        // ADR-0003 dedup: refuse to second-install the same skill, exactly
+        // like the GUI's git install probe does. The GUI answers with an
+        // "already installed, update instead?" dialog; the CLI has nobody to
+        // confirm, so it refuses and points at `update`.
+        let subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
+        if let Some(key) = repo_key::canonical_repo_key(&parsed.clone_url) {
+            if let Some((existing_skill_id, existing_name)) =
+                store.find_skill_by_repo_and_subpath(&key, subpath.as_deref())?
+            {
+                bail!(
+                    "already installed as '{existing_name}' (id {existing_skill_id}); \
+                     run `update {existing_skill_id}` instead of installing a duplicate"
+                );
+            }
+        }
+
         let install_result = installer::install_from_git_dir(&skill_dir, name)?;
         let metadata = cmd::InstallSourceMetadata {
             source_type: "git".to_string(),
@@ -1612,8 +1629,9 @@ fn install_skillssh_action(
             cmd::resolve_skill_dir(&temp_dir, None, Some(&skill_id_field)).map_err(map_app_err)?;
         let revision = git_fetcher::get_head_revision(&temp_dir)?;
         let source_ref = format!("{}/{}", source, skill_id_field);
+        let subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
         let (install_name, destination) =
-            cmd::resolve_skillssh_install_target(store, &source_ref, &skill_id_field)
+            cmd::resolve_skillssh_install_target(store, &source_ref, &skill_id_field, subpath.as_deref())
                 .map_err(map_app_err)?;
         let install_result =
             installer::install_skill_dir_to_destination(&skill_dir, &install_name, &destination)?;
@@ -1621,7 +1639,7 @@ fn install_skillssh_action(
             source_type: "skillssh".to_string(),
             source_ref: Some(source_ref),
             source_ref_resolved: Some(repo_url.clone()),
-            source_subpath: git_fetcher::relative_subpath(&temp_dir, &skill_dir),
+            source_subpath: subpath,
             source_branch: None,
             source_revision: Some(revision.clone()),
             remote_revision: Some(revision),

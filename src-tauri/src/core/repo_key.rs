@@ -1,4 +1,4 @@
-//! Canonical repo keys (CONTEXT.md: **Repo Key / 仓库规范键**).
+//! Canonical repo keys (CONTEXT.md: **Repo Key**).
 //!
 //! One git repository can be spelled many ways — `https://github.com/o/r.git`,
 //! `git@github.com:o/r`, `ssh://git@github.com/o/r`, the skills.sh market
@@ -104,9 +104,23 @@ pub fn canonical_repo_key(source_ref: &str) -> Option<String> {
     Some(segments.join("/").to_lowercase())
 }
 
-/// The repo key for a skills.sh market source reference (`owner/name`).
+/// The repo key for a skills.sh market source reference.
+///
+/// A market `source_ref` is `owner/repo/<skill-id>` — the skill id is a path
+/// *inside* the repo, never a repo segment. GitHub has no nested groups, so
+/// the repo is always exactly `github.com/owner/repo` (ADR-0003): without
+/// this truncation every market skill became its own pseudo-repo group and
+/// the dedup probe could never match it against a git install of the same
+/// repo+path.
 pub fn skillssh_repo_key(source_ref: &str) -> Option<String> {
-    canonical_repo_key(source_ref)
+    let key = canonical_repo_key(source_ref)?;
+    let mut segments = key.splitn(4, '/');
+    match (segments.next(), segments.next(), segments.next()) {
+        (Some(a), Some(b), Some(c)) => Some(format!("{a}/{b}/{c}")),
+        // Fewer than three segments: `canonical_repo_key` already refused
+        // those, but stay honest rather than panic on a future change.
+        _ => Some(key),
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +170,22 @@ mod tests {
         assert_eq!(
             skillssh_repo_key("mattpocock/skills"),
             Some("github.com/mattpocock/skills".into())
+        );
+    }
+
+    #[test]
+    fn market_source_ref_truncates_skill_id() {
+        // install_from_skillssh stores `owner/repo/<skill-id>` as source_ref;
+        // the skill id is a path inside the repo, not a repo segment
+        // (ADR-0003: one repo, one key, one group).
+        assert_eq!(
+            skillssh_repo_key("mattpocock/skills/handdraw-style-prompter"),
+            Some("github.com/mattpocock/skills".into())
+        );
+        // Converges with every git spelling of the same repo.
+        assert_eq!(
+            skillssh_repo_key("MattPocock/Skills/Foo"),
+            Some(canonical_repo_key("https://github.com/MattPocock/Skills.git").unwrap())
         );
     }
 
