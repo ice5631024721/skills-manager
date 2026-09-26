@@ -109,14 +109,14 @@ const MCP_AGENTS: &[McpAgentSpec] = &[
 // ── Parsed entry (agent-agnostic) ──
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RawMcpEntry {
-    name: String,
-    transport: String,
-    command: Option<String>,
-    url: Option<String>,
-    env_keys: Vec<String>,
-    enabled: Option<bool>,
-    entry_id: Option<String>,
+pub(crate) struct RawMcpEntry {
+    pub(crate) name: String,
+    pub(crate) transport: String,
+    pub(crate) command: Option<String>,
+    pub(crate) url: Option<String>,
+    pub(crate) env_keys: Vec<String>,
+    pub(crate) enabled: Option<bool>,
+    pub(crate) entry_id: Option<String>,
 }
 
 struct AgentScan {
@@ -340,7 +340,11 @@ fn sorted_object_keys(map: &serde_json::Map<String, JsonValue>) -> Vec<String> {
 /// Only plugins named [`DSH_MCP_PLUGIN`] count as MCP servers; the same file
 /// also carries hooks and provider plugins. Returns an error when the file is
 /// not the expected top-level list, so the UI can report a parse failure.
-fn parse_dsh_config(content: &str) -> Result<Vec<RawMcpEntry>, String> {
+///
+/// Also reused by `mcp_writers::dsh_yaml`: block attribution slices go through
+/// it, and the validate-inside-writer step compares its entry-name set of the
+/// edited text against the expected set.
+pub(crate) fn parse_dsh_config(content: &str) -> Result<Vec<RawMcpEntry>, String> {
     let root: YamlValue =
         serde_yaml::from_str(content).map_err(|err| format!("YAML 解析失败：{err}"))?;
 
