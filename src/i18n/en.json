@@ -456,6 +456,8 @@
       "undoRemove": "Click to keep this tag"
     },
     "batchHeldBack": "{{count}} skill(s) were left alone — updating them would remove files ({{names}}). Update them one at a time to see what.",
+    "batchHeldBackRest": "{{count}} more skill(s) are also held back — updating them would remove files ({{names}}). Update them one at a time to review.",
+    "nameSeparator": ", ",
     "batchSyncAgents": "Sync to agents ({{count}})",
     "batchSynced": "Synced {{count}} skill targets",
     "batchSyncFailed": "{{count}} targets failed to sync",
@@ -471,8 +473,7 @@
       "source": "By Source"
     },
     "groups": {
-      "ungrouped": "Ungrouped",
-      "uncollected": "Not in a Collection"
+      "ungrouped": "Ungrouped"
     },
     "upstreamDeleted": "Upstream deleted",
     "upstreamDeletedHint": "This skill was deleted upstream; its updates are held back.",
@@ -590,6 +591,7 @@
     "gitAlreadyInstalled": "\"{{name}}\" is already installed. Reinstalling will update it.",
     "onlyThisContributor": "Only this contributor",
     "installClone": "Clone & Preview",
+    "gitReinstall": "Reinstall",
     "gitPreview": {
       "title": "Select Skills to Import",
       "description": "The following skills were found in the repository. Rename them if needed, then confirm.",

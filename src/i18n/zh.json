@@ -456,6 +456,8 @@
       "undoRemove": "点击保留此标签"
     },
     "batchHeldBack": "有 {{count}} 个 skill 未更新——更新会删除文件（{{names}}）。逐个更新可以看到具体是哪些。",
+    "batchHeldBackRest": "另有 {{count}} 个 skill 同样未更新——更新会删除文件（{{names}}）。逐个更新可以查看具体清单。",
+    "nameSeparator": "、",
     "batchSyncAgents": "同步到 Agent ({{count}})",
     "batchSynced": "已同步 {{count}} 项到 Agent",
     "batchSyncFailed": "{{count}} 项同步失败",
@@ -471,8 +473,7 @@
       "source": "按来源"
     },
     "groups": {
-      "ungrouped": "未分组",
-      "uncollected": "未加入集合"
+      "ungrouped": "未分组"
     },
     "upstreamDeleted": "上游已删除",
     "upstreamDeletedHint": "该技能已在上游仓库中被删除，更新将被搁置。",
@@ -590,6 +591,7 @@
     "gitAlreadyInstalled": "\"{{name}}\" 已安装，重新安装将会更新。",
     "onlyThisContributor": "仅看该贡献者",
     "installClone": "克隆并预览",
+    "gitReinstall": "重新安装",
     "gitPreview": {
       "title": "选择要导入的技能",
       "description": "从仓库中发现了以下技能，可自定义名称后导入。",
