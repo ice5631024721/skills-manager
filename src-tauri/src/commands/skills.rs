@@ -1392,11 +1392,17 @@ pub async fn confirm_git_install(
                     update_status: "up_to_date".to_string(),
                 };
                 let installed_id =
-                    store_installed_skill_unlocked(&store, &result, &metadata, None)?;
+                    store_installed_skill_unlocked_deferred(&store, &result, &metadata, None)?;
                 outcome.installed.push(GitInstalledSkill {
                     id: installed_id,
                     name: result.name,
                 });
+            }
+            // One metadata flush for the whole batch: write_all is
+            // O(library), and doing it per skill made a 40-skill confirm
+            // crawl at ~2s each (user-visible "importing forever").
+            if !outcome.installed.is_empty() {
+                sync_metadata::write_all_from_db_unlocked(&store).map_err(AppError::db)?;
             }
             spawn_description_fetch(&store, Some(&repo_url), "git");
             Ok(outcome)
@@ -2703,6 +2709,26 @@ pub fn store_installed_skill_unlocked(
     metadata: &InstallSourceMetadata,
     active_scenario_id: Option<&str>,
 ) -> Result<String, AppError> {
+    let id = store_installed_skill_unlocked_deferred(
+        store,
+        result,
+        metadata,
+        active_scenario_id,
+    )?;
+    sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
+    Ok(id)
+}
+
+/// Same ledger writes WITHOUT the full metadata rewrite. `write_all` is
+/// O(library) per call; a 40-skill batch install calling it per skill made
+/// the confirm loop O(batch × library) — ~2s per skill of pure metadata
+/// churn. Batch callers flush once after the loop instead.
+pub fn store_installed_skill_unlocked_deferred(
+    store: &SkillStore,
+    result: &installer::InstallResult,
+    metadata: &InstallSourceMetadata,
+    active_scenario_id: Option<&str>,
+) -> Result<String, AppError> {
     let now = chrono::Utc::now().timestamp_millis();
     let central_path = result.central_path.to_string_lossy().to_string();
 
@@ -2732,8 +2758,6 @@ pub fn store_installed_skill_unlocked(
                 .add_skill_to_scenario(scenario_id, &existing.id)
                 .map_err(AppError::db)?;
         }
-        sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
-
         if let Some(scenario_id) = active_scenario_id {
             if let Err(e) =
                 super::presets::sync_skill_to_active_preset(store, scenario_id, &existing.id)
@@ -2776,8 +2800,6 @@ pub fn store_installed_skill_unlocked(
             .add_skill_to_scenario(scenario_id, &id)
             .map_err(AppError::db)?;
     }
-    sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
-
     if let Some(scenario_id) = active_scenario_id {
         if let Err(e) = super::presets::sync_skill_to_active_preset(store, scenario_id, &id) {
             log::warn!("Failed to sync newly installed skill to preset: {e}");
@@ -3070,6 +3092,32 @@ pub fn collect_git_skill_dirs(skill_dir: &Path) -> Vec<PathBuf> {
     if is_valid_skill_dir(skill_dir) {
         dirs.push(skill_dir.to_path_buf());
     }
+    // Suite repos ship test fixtures as skill-shaped dirs (gstack:
+    // test/fixtures/context-bill/tree-a/alpha). They parse as valid skills
+    // but are repo-internal test data, not installable content — a 全选 in
+    // the preview imported them straight into the library and synced them
+    // to every agent. Exclude any candidate whose repo-relative path
+    // crosses a test/fixture directory.
+    const TESTISH: &[&str] = &[
+        "test",
+        "tests",
+        "__tests__",
+        "fixture",
+        "fixtures",
+        "testdata",
+        "testing",
+    ];
+    dirs.retain(|dir| {
+        !dir.strip_prefix(skill_dir)
+            .map(|rel| {
+                rel.components().any(|c| {
+                    c.as_os_str()
+                        .to_str()
+                        .is_some_and(|name| TESTISH.contains(&name))
+                })
+            })
+            .unwrap_or(false)
+    });
     dirs.sort();
     dirs
 }
@@ -3467,13 +3515,19 @@ pub async fn batch_import_folder(
                     remote_revision: None,
                     update_status: "local_only".to_string(),
                 };
-                store_installed_skill_unlocked(&store, &result, &metadata, None)
+                store_installed_skill_unlocked_deferred(&store, &result, &metadata, None)
             })();
 
             match install_result {
                 Ok(_) => imported += 1,
                 Err(e) => errors.push(format!("{}: {}", name, e)),
             }
+        }
+
+        // One metadata flush for the whole batch (per-skill flushes made
+        // large imports O(batch × library); see the deferred variant's doc).
+        if imported > 0 {
+            sync_metadata::write_all_from_db_unlocked(&store).map_err(AppError::db)?;
         }
 
         Ok(BatchImportResult {
@@ -3895,6 +3949,9 @@ mod tests {
         // A SKILL.md deeper inside a skill dir is fixture content, not an
         // installable skill (the walker treats skill dirs as leaves).
         write_skill_at(root, "qa/fixtures/sample");
+        // Repo-internal test trees are fixture content too, even though they
+        // sit outside any skill dir (gstack ships test/fixtures/…/alpha).
+        write_skill_at(root, "test/fixtures/context-bill/tree-a/alpha");
         fs::create_dir_all(root.join("bin")).unwrap();
 
         let dirs = collect_git_skill_dirs(root);
